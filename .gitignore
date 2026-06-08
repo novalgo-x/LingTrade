@@ -1,0 +1,46 @@
+# Node / tooling
+node_modules/
+dist/
+coverage/
+package-lock.json
+
+# Local secrets and runtime data
+.env
+.env.*
+!.env.example
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+/data/
+
+# Web app runtime
+web/data/
+web/client/dist/
+
+# Knowledge base uploads
+knowledge_base/
+
+# Claude Code / AI tools
+.claude/
+.superpowers/
+CLAUDE.md
+
+# Script PID files
+scripts/*.pid
+
+# Demo seed scripts
+scripts/seed-demo.ts
+scripts/seed-extra.ts
+scripts/fix-nav-decisions.ts
+
+# Original screenshot files (keep semantic-named copies only)
+images/Screenshot*
+
+# OS/editor noise
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~

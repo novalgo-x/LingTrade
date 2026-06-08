@@ -1,0 +1,30 @@
+{
+  "name": "lingtrade",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A-share investment research copilot workflow with configurable LLM and data providers.",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "tsx tests/run-tests.ts",
+    "dry-run": "tsx src/cli.ts analyze 600519 --dry-run --pretty",
+    "start": "tsx src/cli.ts",
+    "setup": "node scripts/setup.mjs",
+    "dev": "concurrently -n server,client -c blue,green \"cd web/server && npx tsx src/index.ts\" \"cd web/client && npx vite --port 26680\""
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "mammoth": "^1.12.0",
+    "pdf-parse": "^2.4.5"
+  },
+  "devDependencies": {
+    "@types/node": "^20.12.12",
+    "@types/pdf-parse": "^1.1.5",
+    "concurrently": "^9.2.1",
+    "tsx": "^4.19.4",
+    "typescript": "^5.4.5"
+  },
+  "overrides": {
+    "shell-quote": "^1.8.4"
+  }
+}

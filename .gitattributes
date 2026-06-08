@@ -1,0 +1,5 @@
+# 跨平台脚本换行符约束：bash 脚本必须为 LF（Windows 上 autocrlf 转成 CRLF 会导致 bash 报错），
+# PowerShell 脚本按 Windows 惯例使用 CRLF
+*.sh   text eol=lf
+*.mjs  text eol=lf
+*.ps1  text eol=crlf

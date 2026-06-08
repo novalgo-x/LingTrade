@@ -1,0 +1,88 @@
+.sim-root {
+  --sim-bg: #F7F7F5;
+  --sim-bg-soft: #EFEEEA;
+  --sim-surface: #FFFFFF;
+  --sim-surface-2: #FBFBF9;
+  --sim-border: #E5E3DE;
+  --sim-border-strong: #D4D2CC;
+  --sim-hairline: #ECEAE4;
+
+  --sim-text: #14110D;
+  --sim-text-soft: #5A554D;
+  --sim-text-mute: #8E887E;
+  --sim-text-faint: #B6B0A4;
+
+  --sim-brand: #1B2559;
+  --sim-brand-2: #2D3A77;
+  --sim-accent: #C2410C;
+  --sim-accent-soft: #FEEDD8;
+
+  --sim-up: #D7263D;
+  --sim-up-soft: #FCE8EC;
+  --sim-down: #1F8A5B;
+  --sim-down-soft: #E3F3EB;
+  --sim-flat: #8E887E;
+
+  --sim-r-sm: 6px;
+  --sim-r-md: 10px;
+  --sim-r-lg: 14px;
+  --sim-r-xl: 20px;
+  --sim-shadow-card: 0 1px 0 rgba(20,17,13,0.04), 0 1px 3px rgba(20,17,13,0.04);
+  --sim-shadow-pop: 0 12px 32px -8px rgba(20,17,13,0.12), 0 2px 6px rgba(20,17,13,0.06);
+
+  --sim-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --sim-sans: "Inter", "Noto Sans SC", -apple-system, "PingFang SC", "Hiragino Sans GB", system-ui, sans-serif;
+
+  font-family: var(--sim-sans);
+  font-variant-numeric: tabular-nums;
+  background: var(--sim-bg);
+  color: var(--sim-text);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  min-height: 100vh;
+}
+
+.sim-root *, .sim-root *::before, .sim-root *::after {
+  box-sizing: border-box;
+}
+
+.sim-root button {
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.sim-root .num {
+  font-family: var(--sim-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.sim-root .up { color: var(--sim-up); }
+.sim-root .down { color: var(--sim-down); }
+.sim-root .flat { color: var(--sim-text-mute); }
+
+.sim-root ::-webkit-scrollbar { width: 10px; height: 10px; }
+.sim-root ::-webkit-scrollbar-track { background: transparent; }
+.sim-root ::-webkit-scrollbar-thumb { background: #D4D2CC; border-radius: 8px; border: 2px solid var(--sim-bg); }
+.sim-root ::-webkit-scrollbar-thumb:hover { background: #B6B0A4; }
+
+@keyframes sim-pulse {
+  0% { transform: scale(1); opacity: 0.5; }
+  100% { transform: scale(2.4); opacity: 0; }
+}
+
+@keyframes sim-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+@keyframes sim-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
