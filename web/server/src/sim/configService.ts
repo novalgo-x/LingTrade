@@ -21,6 +21,7 @@ const DEFAULTS: Record<string, unknown> = {
   "scheduler.decisionEnabled": true,
   "scheduler.decisionInterval": 30,
   "scheduler.decisionTradingOnly": true,
+  "agent.tradingStyle": "balanced",
 };
 
 export function getConfig<T>(key: string): T {

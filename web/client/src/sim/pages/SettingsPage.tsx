@@ -1,8 +1,9 @@
-import { useState, useEffect, useCallback, type CSSProperties, type ReactNode } from "react";
+import { Fragment, useState, useEffect, useCallback, type CSSProperties, type ReactNode } from "react";
 import { Card } from "../components/Card";
 import { Tag } from "../components/Tag";
 import { Btn } from "../components/Btn";
 import { simApi } from "../api";
+import { TRADING_STYLE_PRESETS } from "../tradingStyles";
 
 // ---- LLM 供应商目录 ----
 const LLM_PROVIDERS = [
@@ -33,10 +34,11 @@ interface RoleModelCfg { provider: string; model: string }
 interface SettingsPageProps {
   schedulerStatus?: { running: boolean; lastRunAt: string | null; nextRunAt: string | null };
   onSchedulerChange?: () => void;
+  initialSection?: string;
 }
 
-export function SettingsPage({ schedulerStatus, onSchedulerChange }: SettingsPageProps = {}) {
-  const [section, setSection] = useState("data");
+export function SettingsPage({ schedulerStatus, onSchedulerChange, initialSection }: SettingsPageProps = {}) {
+  const [section, setSection] = useState(initialSection ?? "data");
   const [tushareToken, setTushareToken] = useState("");
   const [tushareUrl, setTushareUrl] = useState("");
   const [showToken, setShowToken] = useState(false);
@@ -1029,6 +1031,18 @@ function AgentModelSection({ roleModel, setRoleModel, providerCfg, providerModel
 // ============================================================
 // 交易与风控
 // ============================================================
+// 用户在各风格下保存过的风控参数历史：{ conservative: { "risk.maxPositionPct": 0.2, ... }, ... }
+function parseStyleHistory(v: unknown): Record<string, Record<string, number>> {
+  if (v && typeof v === "object" && !Array.isArray(v)) return v as Record<string, Record<string, number>>;
+  return {};
+}
+
+function riskValuesDiffer(a: Record<string, number>, b: Record<string, number>): boolean {
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+  for (const k of keys) if (a[k] !== b[k]) return true;
+  return false;
+}
+
 function TradingSection({ config, setConfig }: { config: Record<string, unknown>; setConfig: React.Dispatch<React.SetStateAction<Record<string, unknown>>> }) {
   const toNum = (v: unknown, fallback: number) => { const n = Number(v); return isNaN(n) ? fallback : n; };
   const fmtPct = (v: number) => (v * 100).toFixed(1);
@@ -1047,6 +1061,10 @@ function TradingSection({ config, setConfig }: { config: Record<string, unknown>
     { key: "risk.maxHoldings", label: "最大持仓数", value: String(toNum(config["risk.maxHoldings"], 10)), unit: "只", enabled: true },
   ]);
 
+  const [style, setStyle] = useState(() => String(config["agent.tradingStyle"] ?? "balanced"));
+  const [styleHint, setStyleHint] = useState(false);
+  const [pendingChoice, setPendingChoice] = useState<{ presetId: string; history: Record<string, number> } | null>(null);
+
   const [saving, setSaving] = useState(false);
   const [saveMsg, setSaveMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
@@ -1054,6 +1072,8 @@ function TradingSection({ config, setConfig }: { config: Record<string, unknown>
     setCommRate(fmtPermil(toNum(config["trading.commissionRate"], 0.00025)));
     setStampRate(fmtPermil(toNum(config["trading.stampDutyRate"], 0.0005)));
     setCommMin(String(toNum(config["trading.commissionMin"], 5)));
+    const s = config["agent.tradingStyle"];
+    if (s !== undefined) setStyle(String(s));
     setRules(prev => prev.map(r => {
       const v = config[r.key];
       if (v === undefined) return r;
@@ -1065,17 +1085,44 @@ function TradingSection({ config, setConfig }: { config: Record<string, unknown>
   const setRule = (idx: number, patch: Partial<RiskRule>) =>
     setRules(prev => prev.map((r, i) => i === idx ? { ...r, ...patch } : r));
 
+  // disableMissing：历史记录里没有的参数（保存时被关闭的）按关闭还原
+  const applyRiskValues = (values: Record<string, number>, disableMissing = false) => {
+    setRules(prev => prev.map(r => {
+      const v = values[r.key];
+      if (v === undefined) return disableMissing ? { ...r, enabled: false } : r;
+      return { ...r, enabled: true, value: r.unit === "只" ? String(v) : fmtPct(v) };
+    }));
+  };
+
+  const selectStyle = (preset: typeof TRADING_STYLE_PRESETS[number]) => {
+    setStyle(preset.id);
+    setSaveMsg(null);
+    applyRiskValues(preset.risk);
+    const history = parseStyleHistory(config["risk.styleHistory"])[preset.id];
+    if (history && riskValuesDiffer(history, preset.risk)) {
+      setPendingChoice({ presetId: preset.id, history });
+      setStyleHint(false);
+    } else {
+      setPendingChoice(null);
+      setStyleHint(true);
+    }
+  };
+
   const handleSave = useCallback(async () => {
-    setSaving(true); setSaveMsg(null);
+    setSaving(true); setSaveMsg(null); setPendingChoice(null);
+    const riskValues: Record<string, number> = {};
+    for (const r of rules) {
+      if (!r.enabled) continue;
+      riskValues[r.key] = r.unit === "只" ? parseInt(r.value) : parseFloat(r.value) / 100;
+    }
     const entries: Record<string, unknown> = {
       "trading.commissionRate": parseFloat(commRate) / 1000,
       "trading.stampDutyRate": parseFloat(stampRate) / 1000,
       "trading.commissionMin": parseFloat(commMin),
+      "agent.tradingStyle": style,
+      "risk.styleHistory": { ...parseStyleHistory(config["risk.styleHistory"]), [style]: riskValues },
+      ...riskValues,
     };
-    for (const r of rules) {
-      if (!r.enabled) continue;
-      entries[r.key] = r.unit === "只" ? parseInt(r.value) : parseFloat(r.value) / 100;
-    }
     try {
       await simApi.setConfig(entries);
       setConfig(prev => ({ ...prev, ...entries }));
@@ -1085,7 +1132,7 @@ function TradingSection({ config, setConfig }: { config: Record<string, unknown>
     } finally {
       setSaving(false);
     }
-  }, [commRate, stampRate, commMin, rules, setConfig]);
+  }, [commRate, stampRate, commMin, rules, style, config, setConfig]);
 
   const disabledInputStyle: CSSProperties = {
     ...inputStyle, background: "var(--sim-bg-soft)", color: "var(--sim-text-mute)", cursor: "default",
@@ -1122,6 +1169,88 @@ function TradingSection({ config, setConfig }: { config: Record<string, unknown>
             <TextInput value={commMin} onChange={v => { setCommMin(v); setSaveMsg(null); }} mono />
           </Field>
         </div>
+      </Card>
+      <Card title="交易风格" subtitle="决定 Agent 的交易策略与纪律；切换会预填推荐风控参数，可调整后保存">
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12, marginTop: 8 }}>
+          {TRADING_STYLE_PRESETS.map(p => {
+            const active = style === p.id;
+            return (
+              <button key={p.id} onClick={() => selectStyle(p)}
+                style={{
+                  textAlign: "left", cursor: "pointer", fontFamily: "inherit",
+                  padding: "14px 16px", borderRadius: 10,
+                  border: active ? `1.5px solid ${p.colors.main}` : "1px solid var(--sim-border)",
+                  background: active ? p.colors.active : p.colors.base,
+                }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ fontSize: 13.5, fontWeight: 700, color: p.colors.main }}>{p.name}</span>
+                  {active && (
+                    <span style={{
+                      fontSize: 10, fontWeight: 600, color: "#fff", background: p.colors.main,
+                      padding: "2px 7px", borderRadius: 999, letterSpacing: "0.02em",
+                    }}>当前</span>
+                  )}
+                </div>
+                <div style={{ fontSize: 11.5, color: "var(--sim-text-soft)", marginTop: 6, lineHeight: 1.5 }}>{p.tagline}</div>
+                <ul style={{ margin: "8px 0 0", padding: 0, listStyle: "none" }}>
+                  {p.points.map(pt => (
+                    <li key={pt} style={{ fontSize: 11, color: "var(--sim-text-mute)", lineHeight: 1.7 }}>· {pt}</li>
+                  ))}
+                </ul>
+              </button>
+            );
+          })}
+        </div>
+        {styleHint && !pendingChoice && (
+          <div style={{ marginTop: 10, fontSize: 11.5, color: "var(--sim-text-soft)" }}>
+            已按所选风格预填下方风控参数，可调整后点击保存生效。
+          </div>
+        )}
+        {pendingChoice && (() => {
+          const preset = TRADING_STYLE_PRESETS.find(p => p.id === pendingChoice.presetId);
+          if (!preset) return null;
+          const fmtRiskVal = (unit: string, v: number | undefined) =>
+            v === undefined ? "关闭" : unit === "只" ? `${v} 只` : `${(v * 100).toFixed(1)}%`;
+          return (
+            <div style={{ marginTop: 12, border: `1px solid ${preset.colors.main}55`, borderRadius: 10, overflow: "hidden", background: "var(--sim-surface)" }}>
+              <div style={{ padding: "10px 14px", fontSize: 12.5, color: "var(--sim-text-soft)", lineHeight: 1.6, borderBottom: "1px solid var(--sim-hairline)", background: preset.colors.base }}>
+                你在「{preset.name}」风格下保存过自定义风控参数，与推荐值不同。表单当前为推荐值，请选择要使用的参数：
+              </div>
+              <div style={{ padding: "2px 14px" }}>
+                <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr 1fr", fontSize: 12.5 }}>
+                  <div style={{ padding: "8px 0", fontSize: 11, color: "var(--sim-text-mute)" }}>参数</div>
+                  <div style={{ padding: "8px 0", fontSize: 11, color: "var(--sim-text-mute)" }}>上次保存</div>
+                  <div style={{ padding: "8px 0", fontSize: 11, color: "var(--sim-text-mute)" }}>推荐值</div>
+                  {rules.map(r => {
+                    const hv = pendingChoice.history[r.key];
+                    const pv = preset.risk[r.key];
+                    const differs = hv !== pv;
+                    return (
+                      <Fragment key={r.key}>
+                        <div style={{ padding: "8px 0", borderTop: "1px solid var(--sim-hairline)" }}>{r.label}</div>
+                        <div style={{
+                          padding: "8px 0", borderTop: "1px solid var(--sim-hairline)", fontFamily: "var(--sim-mono)",
+                          fontWeight: differs ? 600 : 400, color: differs ? preset.colors.main : "var(--sim-text)",
+                        }}>{fmtRiskVal(r.unit, hv)}</div>
+                        <div style={{ padding: "8px 0", borderTop: "1px solid var(--sim-hairline)", fontFamily: "var(--sim-mono)", color: "var(--sim-text-soft)" }}>
+                          {fmtRiskVal(r.unit, pv)}
+                        </div>
+                      </Fragment>
+                    );
+                  })}
+                </div>
+              </div>
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, padding: "10px 14px", borderTop: "1px solid var(--sim-hairline)" }}>
+                <Btn kind="primary" size="sm" onClick={() => { applyRiskValues(pendingChoice.history, true); setPendingChoice(null); setStyleHint(true); }}>
+                  使用上次保存
+                </Btn>
+                <Btn kind="ghost" size="sm" onClick={() => { setPendingChoice(null); setStyleHint(true); }}>
+                  使用推荐值
+                </Btn>
+              </div>
+            </div>
+          );
+        })()}
       </Card>
       <Card title="风控规则">
         <div style={{ display: "flex", flexDirection: "column", gap: 0, marginTop: 4 }}>

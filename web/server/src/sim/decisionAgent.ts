@@ -1,6 +1,7 @@
 import { getDb } from "../db/connection.js";
 import type { AgentDecisionOutput, PortfolioSnapshot } from "./types.js";
 import { getRiskConfig } from "./configService.js";
+import { buildSystemPrompt, type TradingStyle } from "./tradingStyle.js";
 
 interface LlmConfig {
   baseUrl: string;
@@ -17,24 +18,6 @@ function getLlmConfig(): LlmConfig {
     timeoutMs: Number(process.env.LLM_TIMEOUT_MS) || 120000,
   };
 }
-
-const SYSTEM_PROMPT = `你是一个专业的A股量化交易决策者。根据提供的投研报告、账户状态和市场信息，做出交易决策。
-
-**严格要求：**
-1. 输出格式必须是纯JSON，不要包含任何markdown标记或说明文字
-2. 每个决策必须有明确的 action (buy/sell/hold)、ticker、quantity（整百股）、confidence (0-1) 和 reasoning
-3. 遵守风控规则，不要超出允许范围
-4. quantity 必须是100的整数倍（A股交易规则）
-5. 只对有投研报告或持仓的标的做出决策
-
-输出JSON格式：
-{
-  "decisions": [
-    { "ticker": "600879", "action": "buy|sell|hold", "quantity": 100, "confidence": 0.8, "reasoning": "..." }
-  ],
-  "marketOutlook": "对当前市场的整体判断",
-  "portfolioStrategy": "当前组合策略说明"
-}`;
 
 function buildUserPrompt(
   snapshot: PortfolioSnapshot,
@@ -114,8 +97,12 @@ export async function makeDecisions(
   snapshot: PortfolioSnapshot,
   reports: Array<{ ticker: string; name: string; summary: string }>,
   recentDecisions: Array<{ ticker: string; action: string; reasoning: string; createdAt: string }>,
-  watchlist: Array<{ ticker: string; name: string; price: number; report?: string }>
+  watchlist: Array<{ ticker: string; name: string; price: number; report?: string }>,
+  style: TradingStyle
 ): Promise<AgentDecisionOutput> {
+  const systemPrompt = buildSystemPrompt(style);
+  log(`style=${style}`);
+
   const config = getLlmConfig();
   if (!config.apiKey) {
     log("LLM API key not configured, skipping");
@@ -144,7 +131,7 @@ export async function makeDecisions(
       body: JSON.stringify({
         model: config.model,
         messages: [
-          { role: "system", content: SYSTEM_PROMPT },
+          { role: "system", content: systemPrompt },
           { role: "user", content: userPrompt },
         ],
         temperature: 0.3,

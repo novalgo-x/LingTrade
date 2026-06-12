@@ -74,6 +74,7 @@ export interface SimDecision {
   riskAction: string | null;
   orderId: number | null;
   marketOutlook: string | null;
+  tradingStyle: string | null;
   createdAt: string;
 }
 

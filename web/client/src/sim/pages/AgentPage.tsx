@@ -6,15 +6,17 @@ import { Tabs } from "../components/Tabs";
 import { Btn } from "../components/Btn";
 import { PulseDot } from "../components/PulseDot";
 import { fmtMoney, fmtDate } from "../utils";
+import { STYLE_LABELS } from "../tradingStyles";
 import type { SimDecision, SchedulerStatus } from "../types";
 
-export function AgentPage({ initialDecisionId }: { initialDecisionId?: number }) {
+export function AgentPage({ initialDecisionId, onNavigate }: { initialDecisionId?: number; onNavigate?: (page: string) => void }) {
   const [decisions, setDecisions] = useState<SimDecision[]>([]);
   const [selected, setSelected] = useState<SimDecision | null>(null);
   const [filter, setFilter] = useState("all");
   const [detailTab, setDetailTab] = useState("rationale");
   const [scheduler, setScheduler] = useState<SchedulerStatus>({ running: false, lastRunAt: null, nextRunAt: null });
   const [runningOnce, setRunningOnce] = useState(false);
+  const [tradingStyle, setTradingStyle] = useState("balanced");
   const didInitialSelect = useRef(false);
   const needsScroll = useRef(!!initialDecisionId);
 
@@ -27,6 +29,13 @@ export function AgentPage({ initialDecisionId }: { initialDecisionId?: number })
     const id = setInterval(refreshScheduler, 5000);
     return () => clearInterval(id);
   }, [refreshScheduler]);
+
+  useEffect(() => {
+    simApi.getConfig().then(cfg => {
+      const s = cfg["agent.tradingStyle"];
+      if (typeof s === "string" && s in STYLE_LABELS) setTradingStyle(s);
+    }).catch(() => {});
+  }, []);
 
   const refreshDecisions = useCallback(() => {
     const params: Record<string, string> = {};
@@ -95,6 +104,17 @@ export function AgentPage({ initialDecisionId }: { initialDecisionId?: number })
               <span>上次运行: <span style={{ fontFamily: "var(--sim-mono)" }}>{scheduler.lastRunAt ? fmtDate(scheduler.lastRunAt) : "—"}</span></span>
               <span>下次运行: <span style={{ fontFamily: "var(--sim-mono)" }}>{scheduler.nextRunAt ? fmtDate(scheduler.nextRunAt) : "—"}</span></span>
             </div>
+            <div style={{ height: 16, width: 1, background: "var(--sim-border-strong)" }} />
+            <button onClick={() => onNavigate?.("settings:trading")} title="前往设置调整交易风格"
+              style={{
+                display: "flex", alignItems: "center", gap: 6,
+                border: "none", background: "transparent", padding: 0,
+                cursor: "pointer", fontFamily: "inherit", fontSize: 12,
+              }}>
+              <span style={{ color: "var(--sim-text-mute)" }}>交易风格</span>
+              <span style={{ fontWeight: 600, color: "var(--sim-brand)" }}>{STYLE_LABELS[tradingStyle] ?? tradingStyle}</span>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--sim-text-mute)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6" /></svg>
+            </button>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <Btn kind={scheduler.running ? "danger" : "primary"} size="sm" onClick={toggleScheduler}>
@@ -342,6 +362,7 @@ function RationaleTab({ decision }: { decision: SimDecision }) {
             {decision.quantity > 0 && <MetricItem label="交易数量" value={`${decision.quantity} 股`} />}
             {decision.price && decision.quantity > 0 && <MetricItem label="交易金额" value={fmtMoney(decision.price * decision.quantity)} />}
             <MetricItem label="风险等级" value={decision.riskScore === "low" ? "低" : decision.riskScore === "medium" ? "中" : "高"} />
+            <MetricItem label="交易风格" value={decision.tradingStyle ? (STYLE_LABELS[decision.tradingStyle] ?? decision.tradingStyle) : "—"} />
             <MetricItem label="决策周期" value={decision.cycleId ?? "—"} />
           </div>
         </Card>

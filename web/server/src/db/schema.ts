@@ -95,6 +95,7 @@ export function initSchema(db: Database.Database): void {
       confidence REAL DEFAULT 0,
       triggers TEXT,
       market_outlook TEXT,
+      trading_style TEXT,
       created_at TEXT NOT NULL
     );
 
@@ -134,5 +135,10 @@ export function initSchema(db: Database.Database): void {
   const cols = db.pragma("table_info(stocks)") as Array<{ name: string }>;
   if (!cols.some(c => c.name === "sector")) {
     db.exec("ALTER TABLE stocks ADD COLUMN sector TEXT NOT NULL DEFAULT ''");
+  }
+
+  const decisionCols = db.pragma("table_info(sim_decisions)") as Array<{ name: string }>;
+  if (!decisionCols.some(c => c.name === "trading_style")) {
+    db.exec("ALTER TABLE sim_decisions ADD COLUMN trading_style TEXT");
   }
 }

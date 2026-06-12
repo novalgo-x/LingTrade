@@ -186,6 +186,7 @@ simRouter.get("/decisions", (req, res) => {
         riskAction: d.risk_action,
         orderId: d.order_id,
         marketOutlook: d.market_outlook,
+        tradingStyle: d.trading_style,
         createdAt: d.created_at,
       };
     });
@@ -237,7 +238,7 @@ simRouter.get("/decisions/:id", (req, res) => {
       linkedReport,
       portfolioSnapshot: d.portfolio_snapshot ? JSON.parse(d.portfolio_snapshot) : null,
       riskChecks, riskAction: d.risk_action, orderId: d.order_id,
-      marketOutlook: d.market_outlook, createdAt: d.created_at,
+      marketOutlook: d.market_outlook, tradingStyle: d.trading_style, createdAt: d.created_at,
     });
   } catch (err) {
     res.status(500).json({ error: String(err) });

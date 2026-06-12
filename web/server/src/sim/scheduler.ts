@@ -4,6 +4,7 @@ import { isTradingTime, getCurrentPrice } from "./virtualMarket.js";
 import { getOrCreateAccount, getPositions, getPortfolioSnapshot, executeBuy, executeSell } from "./accountService.js";
 import { checkBuyRisk, checkSellRisk, checkStopLoss } from "./riskControl.js";
 import { makeDecisions, getRecentDecisions, getReportSummaries } from "./decisionAgent.js";
+import { resolveTradingStyle } from "./tradingStyle.js";
 import { recordDailyNav } from "./performanceService.js";
 import { startAnalysis, hasRunningTask, startBatchAnalysis, getBatchStatus } from "../services/analyzerService.js";
 import type { SchedulerStatus } from "./types.js";
@@ -112,6 +113,7 @@ export async function runOnce(force = false): Promise<void> {
   try {
     const account = getOrCreateAccount();
     const db = getDb();
+    const tradingStyle = resolveTradingStyle(getConfig("agent.tradingStyle"));
 
     const stocks = db.prepare("SELECT id, ticker, name FROM stocks").all() as Array<{ id: number; ticker: string; name: string }>;
     if (stocks.length === 0) {
@@ -147,11 +149,11 @@ export async function runOnce(force = false): Promise<void> {
         // Record stop-loss decision
         const now = new Date().toISOString();
         db.prepare(
-          `INSERT INTO sim_decisions (account_id, cycle_id, stock_id, ticker, action, quantity, price_at_decision, reasoning, risk_action, final_action, order_id, confidence, created_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`
+          `INSERT INTO sim_decisions (account_id, cycle_id, stock_id, ticker, action, quantity, price_at_decision, reasoning, risk_action, final_action, order_id, confidence, trading_style, created_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
         ).run(account.id, cycleId, alert.stockId, alert.ticker, "sell", alert.quantity, alert.currentPrice,
           `止损触发: 亏损${(alert.lossPct * 100).toFixed(1)}%`, "stop_loss", result.success ? "executed" : "rejected",
-          result.orderId ?? null, 1.0, now);
+          result.orderId ?? null, 1.0, tradingStyle, now);
       }
     }
 
@@ -178,7 +180,7 @@ export async function runOnce(force = false): Promise<void> {
     }
 
     log(`Reports found: ${reports.length}, Watchlist candidates: ${watchlist.length}, Positions: ${updatedSnapshot.positions.length}`);
-    const agentOutput = await makeDecisions(updatedSnapshot, reports, recentDecisions, watchlist);
+    const agentOutput = await makeDecisions(updatedSnapshot, reports, recentDecisions, watchlist, tradingStyle);
     log(`Agent returned ${agentOutput.decisions.length} decisions`);
     if (agentOutput.marketOutlook) log(`Market outlook: ${agentOutput.marketOutlook}`);
     if (agentOutput.portfolioStrategy) log(`Strategy: ${agentOutput.portfolioStrategy}`);
@@ -254,13 +256,13 @@ export async function runOnce(force = false): Promise<void> {
       // Record decision
       db.prepare(
         `INSERT INTO sim_decisions (account_id, cycle_id, stock_id, ticker, action, quantity, price_at_decision, reasoning,
-         portfolio_snapshot, risk_check_result, risk_action, final_action, order_id, confidence, triggers, market_outlook, report_id, created_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+         portfolio_snapshot, risk_check_result, risk_action, final_action, order_id, confidence, triggers, market_outlook, trading_style, report_id, created_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
       ).run(
         account.id, cycleId, stock.id, decision.ticker, decision.action,
         decision.quantity, price, decision.reasoning,
         JSON.stringify(updatedSnapshot), riskCheckResult, riskAction, finalAction,
-        orderId, decision.confidence, null, agentOutput.marketOutlook, latestReport?.id ?? null, now
+        orderId, decision.confidence, null, agentOutput.marketOutlook, tradingStyle, latestReport?.id ?? null, now
       );
     }
 

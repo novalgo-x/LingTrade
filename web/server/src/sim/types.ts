@@ -79,6 +79,7 @@ export interface SimDecisionRow {
   confidence: number;
   triggers: string | null;
   market_outlook: string | null;
+  trading_style: string | null;
   created_at: string;
 }
 

@@ -50,11 +50,11 @@ export function SimApp() {
         {page === "dashboard" && <Dashboard onNavigate={setPage} />}
         {page === "holdings" && <HoldingsPage />}
         {page === "trades" && <TradesPage onNavigate={setPage} />}
-        {page.startsWith("agent") && <AgentPage initialDecisionId={page.includes(":") ? parseInt(page.split(":")[1]!) : undefined} />}
+        {page.startsWith("agent") && <AgentPage initialDecisionId={page.includes(":") ? parseInt(page.split(":")[1]!) : undefined} onNavigate={setPage} />}
         {page === "market" && <MarketPage />}
         {page.startsWith("research") && <ResearchPage initialReportId={page.includes(":") ? parseInt(page.split(":")[1]!) : undefined} />}
         {page === "knowledge" && <KnowledgePage onNavigate={setPage} />}
-        {page === "settings" && <SettingsPage schedulerStatus={scheduler} onSchedulerChange={refreshScheduler} />}
+        {page.startsWith("settings") && <SettingsPage schedulerStatus={scheduler} onSchedulerChange={refreshScheduler} initialSection={page.includes(":") ? page.split(":")[1] : undefined} />}
       </div>
       <OnboardingGuide open={onboarding.show} onClose={onboarding.close} onNavigate={setPage} />
     </div>

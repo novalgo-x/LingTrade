@@ -44,3 +44,5 @@ images/Screenshot*
 .vscode/
 *.swp
 *~
+
+docs/
