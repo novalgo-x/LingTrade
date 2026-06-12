@@ -1,6 +1,6 @@
 import { getDb } from "../db/connection.js";
 import type { AgentDecisionOutput, PortfolioSnapshot } from "./types.js";
-import { getRiskConfig } from "./configService.js";
+import { getRiskConfig, getConfig } from "./configService.js";
 import { buildSystemPrompt, type TradingStyle } from "./tradingStyle.js";
 
 interface LlmConfig {
@@ -8,14 +8,31 @@ interface LlmConfig {
   model: string;
   apiKey: string;
   timeoutMs: number;
+  source: "decision-role" | "env";
+}
+
+// 去掉尾部斜杠与版本段（/v1、/v11 等），调用处会自行拼 /v1
+function stripBase(url: string): string {
+  return url.replace(/\/+$/, "").replace(/\/v\d+$/, "");
 }
 
 function getLlmConfig(): LlmConfig {
+  // 优先用「Agent 模型分配」里决策角色绑定的 provider/model，每次调用现场从 config 解析；
+  // process.env 快照是投研角色的配置（启动/保存时同步），仅作回退
+  const provider = getConfig<string | undefined>("agent.decision.provider");
+  const model = getConfig<string | undefined>("agent.decision.model");
+  const key = provider ? getConfig<string | undefined>(`llm.${provider}.key`) : undefined;
+  const baseUrl = provider ? getConfig<string | undefined>(`llm.${provider}.baseUrl`) : undefined;
+  const timeoutMs = Number(process.env.LLM_TIMEOUT_MS) || 120000;
+  if (provider && model && key && baseUrl) {
+    return { baseUrl: stripBase(baseUrl), model, apiKey: key, timeoutMs, source: "decision-role" };
+  }
   return {
-    baseUrl: process.env.LLM_BASE_URL ?? "https://api.deepseek.com/v1",
+    baseUrl: stripBase(process.env.LLM_BASE_URL ?? "https://api.deepseek.com"),
     model: process.env.LLM_MODEL ?? "deepseek-chat",
     apiKey: process.env.LLM_API_KEY ?? "",
-    timeoutMs: Number(process.env.LLM_TIMEOUT_MS) || 120000,
+    timeoutMs,
+    source: "env",
   };
 }
 
@@ -106,7 +123,7 @@ export async function makeDecisions(
   const config = getLlmConfig();
   if (!config.apiKey) {
     log("LLM API key not configured, skipping");
-    return { decisions: [], marketOutlook: "LLM API key not configured", portfolioStrategy: "N/A" };
+    return { decisions: [], marketOutlook: "LLM API key not configured", portfolioStrategy: "N/A", error: "LLM API Key 未配置" };
   }
 
   log(`Context: ${snapshot.positions.length} positions, ${reports.length} reports, ${watchlist.length} watchlist, ${recentDecisions.length} recent decisions`);
@@ -120,7 +137,7 @@ export async function makeDecisions(
   const timeout = setTimeout(() => controller.abort(), config.timeoutMs);
 
   try {
-    log(`Calling LLM: ${config.model} @ ${config.baseUrl}`);
+    log(`Calling LLM: ${config.model} @ ${config.baseUrl} [${config.source}]`);
     const startMs = Date.now();
     const resp = await fetch(`${config.baseUrl.replace(/\/+$/, "")}/v1/chat/completions`, {
       method: "POST",
@@ -144,7 +161,9 @@ export async function makeDecisions(
     if (!resp.ok) {
       const body = await resp.text().catch(() => "");
       log(`LLM API error: ${resp.status} (${elapsedMs}ms) body: ${body.slice(0, 200)}`);
-      return { decisions: [], marketOutlook: `LLM error: ${resp.status}`, portfolioStrategy: "N/A" };
+      let detail = "";
+      try { detail = (JSON.parse(body) as { error?: { message?: string } }).error?.message ?? ""; } catch { detail = body.slice(0, 120); }
+      return { decisions: [], marketOutlook: `LLM error: ${resp.status}`, portfolioStrategy: "N/A", error: `LLM ${resp.status}: ${detail || "请求失败"}`.slice(0, 160) };
     }
 
     const data = await resp.json() as { choices?: Array<{ message?: { content?: string } }>; usage?: { prompt_tokens?: number; completion_tokens?: number } };
@@ -153,7 +172,7 @@ export async function makeDecisions(
 
     if (!content) {
       log("Empty LLM response content");
-      return { decisions: [], marketOutlook: "Empty LLM response", portfolioStrategy: "N/A" };
+      return { decisions: [], marketOutlook: "Empty LLM response", portfolioStrategy: "N/A", error: "LLM 返回内容为空" };
     }
 
     log(`Raw LLM output:\n${content}`);
@@ -163,12 +182,12 @@ export async function makeDecisions(
       parsed = parseJsonOutput(content) as AgentDecisionOutput;
     } catch (parseErr) {
       log(`JSON parse failed: ${parseErr}`);
-      return { decisions: [], marketOutlook: "JSON parse error", portfolioStrategy: "N/A" };
+      return { decisions: [], marketOutlook: "JSON parse error", portfolioStrategy: "N/A", error: "LLM 输出 JSON 解析失败" };
     }
 
     if (!Array.isArray(parsed.decisions)) {
       log(`Invalid decisions format: ${typeof parsed.decisions}`);
-      return { decisions: [], marketOutlook: parsed.marketOutlook ?? "Parse error", portfolioStrategy: "N/A" };
+      return { decisions: [], marketOutlook: parsed.marketOutlook ?? "Parse error", portfolioStrategy: "N/A", error: "LLM 输出格式错误（decisions 非数组）" };
     }
 
     log(`Parsed ${parsed.decisions.length} raw decisions, market outlook: ${parsed.marketOutlook ?? "none"}`);
@@ -195,7 +214,10 @@ export async function makeDecisions(
     return parsed;
   } catch (err) {
     log(`Error: ${err}`);
-    return { decisions: [], marketOutlook: "Decision failed", portfolioStrategy: "N/A" };
+    const msg = err instanceof Error && err.name === "AbortError"
+      ? `LLM 请求超时（${Math.round(config.timeoutMs / 1000)}s）`
+      : `LLM 请求失败: ${String(err).slice(0, 120)}`;
+    return { decisions: [], marketOutlook: "Decision failed", portfolioStrategy: "N/A", error: msg };
   } finally {
     clearTimeout(timeout);
   }

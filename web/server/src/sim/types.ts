@@ -148,11 +148,15 @@ export interface AgentDecisionOutput {
   decisions: AgentDecisionInput[];
   marketOutlook: string;
   portfolioStrategy: string;
+  // LLM 调用/解析失败的简短原因，供调度器透出到 UI；成功时不设置
+  error?: string;
 }
 
 export interface SchedulerStatus {
   running: boolean;
   lastRunAt: string | null;
+  lastRunDecisions: number | null;
+  lastRunError: string | null;
   nextRunAt: string | null;
   currentCycleId: string | null;
 }

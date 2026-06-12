@@ -9,12 +9,19 @@ async function get<T>(path: string, timeout = DEFAULT_TIMEOUT): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-async function post<T>(path: string, body?: unknown, timeout = DEFAULT_TIMEOUT): Promise<T> {
+// 超时与外部取消信号合并；旧浏览器无 AbortSignal.any 时退化为仅外部信号
+function withSignal(timeout: number, signal?: AbortSignal): AbortSignal {
+  if (!signal) return AbortSignal.timeout(timeout);
+  const anyFn = (AbortSignal as unknown as { any?: (signals: AbortSignal[]) => AbortSignal }).any;
+  return anyFn ? anyFn([AbortSignal.timeout(timeout), signal]) : signal;
+}
+
+async function post<T>(path: string, body?: unknown, timeout = DEFAULT_TIMEOUT, signal?: AbortSignal): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     method: "POST",
     headers: body ? { "Content-Type": "application/json" } : {},
     body: body ? JSON.stringify(body) : undefined,
-    signal: AbortSignal.timeout(timeout),
+    signal: withSignal(timeout, signal),
   });
   if (!res.ok) throw new Error(`API error: ${res.status}`);
   return res.json() as Promise<T>;
@@ -60,7 +67,9 @@ export const simApi = {
   getSchedulerStatus: () => get<SchedulerStatus>("/scheduler/status"),
   startScheduler: () => post<SchedulerStatus>("/scheduler/start"),
   stopScheduler: () => post<SchedulerStatus>("/scheduler/stop"),
-  runOnce: (force = false) => post<{ success: boolean }>("/run-once", { force }),
+  // 服务端等整个决策周期（含 LLM 调用）跑完才返回，默认 20s 超时必挂；
+  // 即便超过 10 分钟，AgentPage 还有 currentCycleId 轮询兜底刷新
+  runOnce: (force = false) => post<{ success: boolean }>("/run-once", { force }, 600_000),
   resetAccount: (initialBalance?: number) => post<{ success: boolean }>("/account/reset", initialBalance ? { initialBalance } : undefined),
   clearDecisions: () => post<{ success: boolean }>("/account/clear-decisions"),
   getMarketState: () => get<{ state: string }>("/market/state"),
@@ -82,8 +91,9 @@ export const simApi = {
   testXueqiu: (cookie?: string) => post<{ ok: boolean; latency?: number; mode?: string; error?: string }>("/xueqiu/test", { cookie }),
   saveXueqiu: (cookie: string) => post<{ ok: boolean }>("/xueqiu/save", { cookie }),
   getLlmStatus: () => get<{ configured: boolean }>("/llm/status"),
-  testLlm: (apiKey: string, baseUrl: string, model?: string, id?: string) =>
-    post<{ ok: boolean; latency?: number; error?: string }>("/llm/test", { apiKey, baseUrl, model, id }),
+  // 服务端对上游限 20s，客户端放宽到 25s，避免抢在服务端超时信息返回前中断
+  testLlm: (apiKey: string, baseUrl: string, model?: string, id?: string, signal?: AbortSignal) =>
+    post<{ ok: boolean; latency?: number; error?: string }>("/llm/test", { apiKey, baseUrl, model, id }, 25_000, signal),
   fetchLlmModels: (apiKey: string, baseUrl: string) =>
     post<{ models: string[] }>("/llm/models", { apiKey, baseUrl }),
   saveLlmProvider: (id: string, key: string, baseUrl: string, enabled: boolean) =>

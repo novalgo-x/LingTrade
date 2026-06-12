@@ -3,9 +3,11 @@ import express from "express";
 import cors from "cors";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { setupFileLogging } from "./logger.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.resolve(__dirname, "..", "..", "..", ".env") });
+setupFileLogging();
 import { getDb } from "./db/connection.js";
 import { initSchema } from "./db/schema.js";
 import { stocksRouter } from "./routes/stocks.js";

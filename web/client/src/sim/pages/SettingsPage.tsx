@@ -1,9 +1,10 @@
-import { Fragment, useState, useEffect, useCallback, type CSSProperties, type ReactNode } from "react";
+import { Fragment, useState, useEffect, useCallback, useRef, type CSSProperties, type ReactNode } from "react";
 import { Card } from "../components/Card";
 import { Tag } from "../components/Tag";
 import { Btn } from "../components/Btn";
 import { simApi } from "../api";
 import { TRADING_STYLE_PRESETS } from "../tradingStyles";
+import { pickDefaultChatModel } from "../llmModels";
 
 // ---- LLM 供应商目录 ----
 const LLM_PROVIDERS = [
@@ -60,6 +61,7 @@ export function SettingsPage({ schedulerStatus, onSchedulerChange, initialSectio
 
   const [config, setConfig] = useState<Record<string, unknown>>({});
   const [providerModels, setProviderModels] = useState<Record<string, string[]>>({});
+  const [providerBlocked, setProviderBlocked] = useState<Record<string, string[]>>({});
 
   useEffect(() => {
     simApi.getTushare().then(ts => {
@@ -89,6 +91,10 @@ export function SettingsPage({ schedulerStatus, onSchedulerChange, initialSectio
         const models = cfg[`llm.${p.id}.models`];
         if (Array.isArray(models) && models.length > 0) {
           setProviderModels(prev => ({ ...prev, [p.id]: models as string[] }));
+        }
+        const blocked = cfg[`llm.${p.id}.blockedModels`];
+        if (Array.isArray(blocked) && blocked.length > 0) {
+          setProviderBlocked(prev => ({ ...prev, [p.id]: blocked as string[] }));
         }
       });
       AGENT_ROLES.forEach(r => {
@@ -155,7 +161,7 @@ export function SettingsPage({ schedulerStatus, onSchedulerChange, initialSectio
           <DataSourceSection token={tushareToken} setToken={setTushareToken} showToken={showToken} setShowToken={setShowToken} tushareUrl={tushareUrl} setTushareUrl={setTushareUrl} xqCookie={xqCookie} setXqCookie={setXqCookie} />
         )}
         {section === "models" && (
-          <ModelsSection providerCfg={providerCfg} setProviderCfg={setProviderCfg} providerModels={providerModels} setProviderModels={setProviderModels} />
+          <ModelsSection providerCfg={providerCfg} setProviderCfg={setProviderCfg} providerModels={providerModels} setProviderModels={setProviderModels} providerBlocked={providerBlocked} setProviderBlocked={setProviderBlocked} />
         )}
         {section === "agent" && (
           <AgentModelSection roleModel={roleModel} setRoleModel={setRoleModel} providerCfg={providerCfg} providerModels={providerModels} />
@@ -349,7 +355,7 @@ const miniBtnStyle: CSSProperties = {
 // ============================================================
 // 数据源
 // ============================================================
-type TestResult = { ok: boolean; latency?: number; error?: string; mode?: string } | null;
+type TestResult = { ok: boolean; latency?: number; error?: string; mode?: string; model?: string; tried?: number; removed?: number } | null;
 
 function XueqiuCard({ cookie, setCookie }: { cookie: string; setCookie: (v: string) => void }) {
   const [testing, setTesting] = useState(false);
@@ -610,9 +616,10 @@ function DataSourceSection({ token, setToken, showToken, setShowToken, tushareUr
 // ============================================================
 // 模型 API
 // ============================================================
-function ModelsSection({ providerCfg, setProviderCfg, providerModels, setProviderModels }: {
+function ModelsSection({ providerCfg, setProviderCfg, providerModels, setProviderModels, providerBlocked, setProviderBlocked }: {
   providerCfg: Record<string, ProviderCfg>; setProviderCfg: React.Dispatch<React.SetStateAction<Record<string, ProviderCfg>>>;
   providerModels: Record<string, string[]>; setProviderModels: React.Dispatch<React.SetStateAction<Record<string, string[]>>>;
+  providerBlocked: Record<string, string[]>; setProviderBlocked: React.Dispatch<React.SetStateAction<Record<string, string[]>>>;
 }) {
   const [expanded, setExpanded] = useState<string | null>(null);
   const enabledCount = Object.values(providerCfg).filter(c => c.enabled).length;
@@ -622,12 +629,17 @@ function ModelsSection({ providerCfg, setProviderCfg, providerModels, setProvide
 
   const [testResults, setTestResults] = useState<Record<string, TestResult>>({});
   const [testing, setTesting] = useState<Record<string, boolean>>({});
+  const [testProgress, setTestProgress] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState<Record<string, boolean>>({});
   const [saveMsg, setSaveMsg] = useState<Record<string, { ok: boolean; text: string }>>({});
   const [loadingModels, setLoadingModels] = useState<Record<string, boolean>>({});
   const [newModelInput, setNewModelInput] = useState("");
   const [addingModel, setAddingModel] = useState(false);
   const [addModelErr, setAddModelErr] = useState("");
+  const [hoverTest, setHoverTest] = useState<string | null>(null);
+  // 点击测试后鼠标仍停在按钮上，立即变「取消测试」很突兀：5 秒后才允许悬停出现取消
+  const [cancelReady, setCancelReady] = useState<Record<string, boolean>>({});
+  const testAbort = useRef<Record<string, AbortController>>({});
 
   const clearFeedback = useCallback((id: string) => {
     setTestResults(prev => { const n = { ...prev }; delete n[id]; return n; });
@@ -639,16 +651,32 @@ function ModelsSection({ providerCfg, setProviderCfg, providerModels, setProvide
     simApi.setConfig({ [`llm.${id}.models`]: models }).catch(() => {});
   }, [setProviderModels]);
 
+  const saveBlocked = useCallback((id: string, blocked: string[]) => {
+    setProviderBlocked(prev => ({ ...prev, [id]: blocked }));
+    simApi.setConfig({ [`llm.${id}.blockedModels`]: blocked }).catch(() => {});
+  }, [setProviderBlocked]);
+
   const fetchModels = useCallback(async (id: string) => {
     const cfg = providerCfg[id]!;
     if (!cfg.key.trim() || !cfg.baseUrl.trim()) return;
     setLoadingModels(prev => ({ ...prev, [id]: true }));
     try {
       const r = await simApi.fetchLlmModels(cfg.key.trim(), cfg.baseUrl.trim());
-      if (r.models.length > 0) saveModels(id, r.models);
+      if (r.models.length > 0) {
+        // 屏蔽名单只对上游真实存在的模型有意义：更换 Base URL / Key 后，旧的屏蔽项一并清掉
+        let blocked = providerBlocked[id] ?? [];
+        const kept = blocked.filter(b => r.models.includes(b));
+        if (kept.length !== blocked.length) {
+          blocked = kept;
+          saveBlocked(id, kept);
+        }
+        // 已屏蔽的模型刷新后不再回到列表
+        const fresh = r.models.filter(m => !blocked.includes(m));
+        if (fresh.length > 0) saveModels(id, fresh);
+      }
     } catch { /* user can add manually */ }
     finally { setLoadingModels(prev => ({ ...prev, [id]: false })); }
-  }, [providerCfg, saveModels]);
+  }, [providerCfg, providerBlocked, saveModels, saveBlocked]);
 
   useEffect(() => {
     if (!expanded) return;
@@ -662,35 +690,83 @@ function ModelsSection({ providerCfg, setProviderCfg, providerModels, setProvide
   const handleTest = useCallback(async (id: string) => {
     const cfg = providerCfg[id]!;
     if (!cfg.key.trim()) { setTestResults(prev => ({ ...prev, [id]: { ok: false, error: "API Key 不能为空" } })); return; }
+    const ctrl = new AbortController();
+    testAbort.current[id] = ctrl;
     setTesting(prev => ({ ...prev, [id]: true }));
+    setCancelReady(prev => ({ ...prev, [id]: false }));
+    const cancelTimer = setTimeout(() => setCancelReady(prev => ({ ...prev, [id]: true })), 5000);
     clearFeedback(id);
     try {
+      let blocked = providerBlocked[id] ?? [];
+      // 每次测试都重新拉取模型列表（已屏蔽的过滤掉）：更换 Key / Base URL 后旧列表可能已失效
       let models = providerModels[id] ?? [];
-      if (!models.length) {
-        setLoadingModels(prev => ({ ...prev, [id]: true }));
-        try {
-          const mr = await simApi.fetchLlmModels(cfg.key.trim(), cfg.baseUrl.trim());
-          if (mr.models.length > 0) {
-            models = mr.models;
+      setLoadingModels(prev => ({ ...prev, [id]: true }));
+      try {
+        const mr = await simApi.fetchLlmModels(cfg.key.trim(), cfg.baseUrl.trim());
+        if (mr.models.length > 0) {
+          // 屏蔽名单只对上游真实存在的模型有意义：更换 Base URL / Key 后，旧的屏蔽项一并清掉
+          const kept = blocked.filter(b => mr.models.includes(b));
+          if (kept.length !== blocked.length) {
+            blocked = kept;
+            saveBlocked(id, kept);
+          }
+          const fresh = mr.models.filter(m => !blocked.includes(m));
+          if (fresh.length > 0) {
+            models = fresh;
             saveModels(id, models);
           }
-        } finally {
-          setLoadingModels(prev => ({ ...prev, [id]: false }));
         }
-        if (!models.length) {
-          setTestResults(prev => ({ ...prev, [id]: { ok: false, error: "未获取到可用模型，请手动添加" } }));
-          return;
+      } finally {
+        setLoadingModels(prev => ({ ...prev, [id]: false }));
+      }
+      if (!models.length) {
+        setTestResults(prev => ({ ...prev, [id]: { ok: false, error: "未获取到可用模型，请手动添加" } }));
+        return;
+      }
+      // 按列表顺序依次尝试，找到第一个可用模型即停止；无论返回什么错误都继续下一个，可随时取消。
+      // 路上失败的模型在最终成功时屏蔽——大列表（如百炼 200+）逐次测试会越测越干净
+      const total = models.length;
+      let result: NonNullable<TestResult> = { ok: false, error: "无可测试的模型" };
+      let completed = 0;
+      let cancelled = false;
+      const unavailable: string[] = [];
+      for (const m of models) {
+        if (ctrl.signal.aborted) { cancelled = true; break; }
+        setTestProgress(prev => ({ ...prev, [id]: `${completed + 1}/${total}` }));
+        try {
+          const r = await simApi.testLlm(cfg.key.trim(), cfg.baseUrl.trim(), m, id, ctrl.signal);
+          completed += 1;
+          result = { ...r, model: m, tried: completed };
+          if (r.ok) break;
+          unavailable.push(m);
+        } catch (e) {
+          if (ctrl.signal.aborted || (e instanceof DOMException && e.name === "AbortError")) { cancelled = true; break; }
+          completed += 1;
+          result = { ok: false, error: e instanceof DOMException && e.name === "TimeoutError" ? "请求超时" : "请求失败", model: m, tried: completed };
+          unavailable.push(m);
         }
       }
-      const r = await simApi.testLlm(cfg.key.trim(), cfg.baseUrl.trim(), models[0], id);
-      setTestResults(prev => ({ ...prev, [id]: r }));
+      if (cancelled) {
+        result = { ok: false, error: completed > 0 ? `已取消（已测 ${completed}/${total} 个模型）` : "已取消" };
+      }
+      // 找到可用模型即证明 Key / 端点正常，把前面失败的屏蔽掉；整体失败时不屏蔽（多半是 Key / 端点问题）
+      if (result.ok && unavailable.length > 0) {
+        saveBlocked(id, [...new Set([...blocked, ...unavailable])]);
+        saveModels(id, models.filter(m => !unavailable.includes(m)));
+        result.removed = unavailable.length;
+      }
+      setTestResults(prev => ({ ...prev, [id]: result }));
     } catch (e) {
       const msg = e instanceof DOMException && e.name === "TimeoutError" ? "请求超时，请检查网络连接" : "请求失败";
       setTestResults(prev => ({ ...prev, [id]: { ok: false, error: msg } }));
     } finally {
+      clearTimeout(cancelTimer);
       setTesting(prev => ({ ...prev, [id]: false }));
+      setTestProgress(prev => { const n = { ...prev }; delete n[id]; return n; });
+      setCancelReady(prev => { const n = { ...prev }; delete n[id]; return n; });
+      delete testAbort.current[id];
     }
-  }, [providerCfg, providerModels, clearFeedback, saveModels]);
+  }, [providerCfg, providerModels, providerBlocked, clearFeedback, saveModels, saveBlocked]);
 
   const handleSave = useCallback(async (id: string) => {
     const cfg = providerCfg[id]!;
@@ -718,6 +794,9 @@ function ModelsSection({ providerCfg, setProviderCfg, providerModels, setProvide
       const r = await simApi.testLlm(cfg.key.trim(), cfg.baseUrl.trim(), name, id);
       if (r.ok) {
         saveModels(id, [...current, name]);
+        // 手动添加并验证通过，视为用户要解除屏蔽
+        const blocked = providerBlocked[id] ?? [];
+        if (blocked.includes(name)) saveBlocked(id, blocked.filter(m => m !== name));
         setNewModelInput("");
       } else {
         setAddModelErr(r.error || "模型不可用");
@@ -727,11 +806,27 @@ function ModelsSection({ providerCfg, setProviderCfg, providerModels, setProvide
     } finally {
       setAddingModel(false);
     }
-  }, [newModelInput, providerModels, providerCfg, saveModels]);
+  }, [newModelInput, providerModels, providerBlocked, providerCfg, saveModels, saveBlocked]);
 
   const removeModel = useCallback((id: string, model: string) => {
+    // 手动移除同时加入屏蔽名单，否则下次自动刷新列表又会回来
+    saveBlocked(id, [...new Set([...(providerBlocked[id] ?? []), model])]);
     saveModels(id, (providerModels[id] ?? []).filter(m => m !== model));
-  }, [providerModels, saveModels]);
+  }, [providerModels, providerBlocked, saveModels, saveBlocked]);
+
+  const restoreModel = useCallback((id: string, model: string) => {
+    saveBlocked(id, (providerBlocked[id] ?? []).filter(m => m !== model));
+    const current = providerModels[id] ?? [];
+    if (!current.includes(model)) saveModels(id, [...current, model]);
+  }, [providerModels, providerBlocked, saveModels, saveBlocked]);
+
+  const restoreAllModels = useCallback((id: string) => {
+    const blocked = providerBlocked[id] ?? [];
+    if (!blocked.length) return;
+    const current = providerModels[id] ?? [];
+    saveBlocked(id, []);
+    saveModels(id, [...current, ...blocked.filter(m => !current.includes(m))]);
+  }, [providerModels, providerBlocked, saveModels, saveBlocked]);
 
   return (
     <>
@@ -747,6 +842,7 @@ function ModelsSection({ providerCfg, setProviderCfg, providerModels, setProvide
           const tr = testResults[p.id];
           const sm = saveMsg[p.id];
           const models = providerModels[p.id] ?? [];
+          const blocked = providerBlocked[p.id] ?? [];
           const isTesting = testing[p.id];
           const isSaving = saving[p.id];
           const isLoadingModels = loadingModels[p.id];
@@ -856,6 +952,39 @@ function ModelsSection({ providerCfg, setProviderCfg, providerModels, setProvide
                     {addModelErr && (
                       <div style={{ fontSize: 11.5, color: "var(--sim-up)", marginTop: 4 }}>{addModelErr}</div>
                     )}
+                    {blocked.length > 0 && (
+                      <div style={{ marginTop: 12 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
+                          <span style={{ fontSize: 11.5, color: "var(--sim-text-mute)" }}>
+                            已屏蔽 {blocked.length} 个模型（刷新列表时不再加回）
+                          </span>
+                          <button onClick={() => restoreAllModels(p.id)} style={{
+                            border: "none", background: "transparent", cursor: "pointer", padding: 0,
+                            fontSize: 11.5, color: "var(--sim-brand)", fontWeight: 500,
+                          }}>全部恢复</button>
+                        </div>
+                        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                          {blocked.map(m => (
+                            <span key={m} style={{
+                              fontFamily: "var(--sim-mono)", fontSize: 11.5,
+                              padding: "4px 6px 4px 10px", background: "transparent",
+                              border: "1px dashed var(--sim-border)", borderRadius: 6, color: "var(--sim-text-mute)",
+                              display: "inline-flex", alignItems: "center", gap: 4, textDecoration: "line-through",
+                            }}>
+                              {m}
+                              <button onClick={() => restoreModel(p.id, m)} style={{
+                                border: "none", background: "transparent", cursor: "pointer", padding: 0,
+                                color: "var(--sim-text-mute)", display: "flex", lineHeight: 1,
+                              }} title="恢复">
+                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                  <polyline points="1 4 1 10 7 10" /><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" />
+                                </svg>
+                              </button>
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
 
                   {tr && (
@@ -872,7 +1001,9 @@ function ModelsSection({ providerCfg, setProviderCfg, providerModels, setProvide
                           ? <><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" /><polyline points="22 4 12 14.01 9 11.01" /></>
                           : <><circle cx="12" cy="12" r="10" /><line x1="15" y1="9" x2="9" y2="15" /><line x1="9" y1="9" x2="15" y2="15" /></>}
                       </svg>
-                      {tr.ok ? `连接成功，延迟 ${tr.latency}ms，Key 已保存` : `连接失败：${tr.error}`}
+                      {tr.ok
+                        ? `连接成功${tr.model ? `（${tr.model}）` : ""}，延迟 ${tr.latency}ms，Key 已保存${tr.removed ? `，已屏蔽 ${tr.removed} 个不可用模型` : ""}`
+                        : `连接失败${tr.model ? (tr.tried && tr.tried > 1 ? `（依次尝试 ${tr.tried} 个模型，最后 ${tr.model}）` : `（${tr.model}）`) : ""}：${tr.error}`}
                     </div>
                   )}
 
@@ -890,9 +1021,27 @@ function ModelsSection({ providerCfg, setProviderCfg, providerModels, setProvide
                   )}
 
                   <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 16 }}>
-                    <Btn kind="ghost" size="sm" onClick={() => handleTest(p.id)} disabled={isTesting || !cfg.key.trim()}>
-                      {isTesting ? "测试中..." : "测试调用"}
-                    </Btn>
+                    {isTesting ? (
+                      // 悬停才显示红色「取消测试」（开始 5 秒内不出现）；固定 minWidth 防止文案切换时按钮宽度抖动导致 hover 闪烁
+                      <span style={{ display: "inline-flex" }}
+                        onMouseEnter={() => setHoverTest(p.id)}
+                        onMouseLeave={() => setHoverTest(prev => (prev === p.id ? null : prev))}>
+                        {(() => {
+                          const showCancel = hoverTest === p.id && cancelReady[p.id];
+                          return (
+                            <Btn kind={showCancel ? "danger" : "ghost"} size="sm"
+                              onClick={() => { if (cancelReady[p.id]) testAbort.current[p.id]?.abort(); }}
+                              style={{ minWidth: 104, justifyContent: "center", opacity: showCancel ? 1 : 0.6 }}>
+                              {showCancel ? "取消测试" : `测试中${testProgress[p.id] ? ` (${testProgress[p.id]})` : ""}...`}
+                            </Btn>
+                          );
+                        })()}
+                      </span>
+                    ) : (
+                      <Btn kind="ghost" size="sm" onClick={() => handleTest(p.id)} disabled={!cfg.key.trim()}>
+                        测试调用
+                      </Btn>
+                    )}
                     <Btn kind="primary" size="sm" onClick={() => handleSave(p.id)} disabled={isSaving}>
                       {isSaving ? "保存中..." : "保存"}
                     </Btn>
@@ -962,7 +1111,7 @@ function AgentModelSection({ roleModel, setRoleModel, providerCfg, providerModel
           const effectiveProvider = providerValid ? rm.provider : enabledProviders[0]?.id ?? "";
           const models = providerModels[effectiveProvider] ?? [];
           const modelValid = models.includes(rm.model);
-          const effectiveModel = modelValid ? rm.model : models[0] ?? "";
+          const effectiveModel = modelValid ? rm.model : pickDefaultChatModel(models) ?? "";
 
           if (effectiveProvider !== rm.provider || effectiveModel !== rm.model) {
             setTimeout(() => setRoleModel(prev => ({ ...prev, [role.id]: { provider: effectiveProvider, model: effectiveModel } })), 0);
@@ -987,7 +1136,7 @@ function AgentModelSection({ roleModel, setRoleModel, providerCfg, providerModel
                     value={effectiveProvider}
                     onChange={v => {
                       const m = providerModels[v] ?? [];
-                      setRoleModel(prev => ({ ...prev, [role.id]: { provider: v, model: m[0] ?? "" } }));
+                      setRoleModel(prev => ({ ...prev, [role.id]: { provider: v, model: pickDefaultChatModel(m) ?? "" } }));
                     }}
                     options={enabledProviders.map(p => ({ value: p.id, label: p.name }))}
                     width={150}

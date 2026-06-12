@@ -129,7 +129,10 @@ export interface SimPerformance {
 export interface SchedulerStatus {
   running: boolean;
   lastRunAt: string | null;
+  lastRunDecisions?: number | null;
+  lastRunError?: string | null;
   nextRunAt: string | null;
+  currentCycleId?: string | null;
 }
 
 export interface SimConfig {

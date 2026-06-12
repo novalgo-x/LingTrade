@@ -12,6 +12,8 @@ import type { SchedulerStatus } from "./types.js";
 let timer: ReturnType<typeof setInterval> | null = null;
 let running = false;
 let lastRunAt: string | null = null;
+let lastRunDecisions: number | null = null;
+let lastRunError: string | null = null;
 let nextRunAt: string | null = null;
 let currentCycleId: string | null = null;
 
@@ -114,6 +116,7 @@ export async function runOnce(force = false): Promise<void> {
     const account = getOrCreateAccount();
     const db = getDb();
     const tradingStyle = resolveTradingStyle(getConfig("agent.tradingStyle"));
+    let decisionCount = 0;
 
     const stocks = db.prepare("SELECT id, ticker, name FROM stocks").all() as Array<{ id: number; ticker: string; name: string }>;
     if (stocks.length === 0) {
@@ -154,6 +157,7 @@ export async function runOnce(force = false): Promise<void> {
         ).run(account.id, cycleId, alert.stockId, alert.ticker, "sell", alert.quantity, alert.currentPrice,
           `止损触发: 亏损${(alert.lossPct * 100).toFixed(1)}%`, "stop_loss", result.success ? "executed" : "rejected",
           result.orderId ?? null, 1.0, tradingStyle, now);
+        decisionCount += 1;
       }
     }
 
@@ -264,13 +268,17 @@ export async function runOnce(force = false): Promise<void> {
         JSON.stringify(updatedSnapshot), riskCheckResult, riskAction, finalAction,
         orderId, decision.confidence, null, agentOutput.marketOutlook, tradingStyle, latestReport?.id ?? null, now
       );
+      decisionCount += 1;
     }
 
     await recordDailyNav(account.id);
     lastRunAt = new Date().toISOString();
-    log(`Cycle ${cycleId} completed`);
+    lastRunDecisions = decisionCount;
+    lastRunError = agentOutput.error ?? null;
+    log(`Cycle ${cycleId} completed, ${decisionCount} decisions recorded${agentOutput.error ? `, error: ${agentOutput.error}` : ""}`);
   } catch (err) {
     console.error(`[Scheduler] Cycle ${cycleId} error:`, err);
+    lastRunError = String(err).slice(0, 160);
   } finally {
     currentCycleId = null;
   }
@@ -308,6 +316,8 @@ export function getStatus(): SchedulerStatus {
   return {
     running,
     lastRunAt,
+    lastRunDecisions,
+    lastRunError,
     nextRunAt,
     currentCycleId,
   };

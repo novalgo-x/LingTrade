@@ -19,6 +19,10 @@ export function AgentPage({ initialDecisionId, onNavigate }: { initialDecisionId
   const [tradingStyle, setTradingStyle] = useState("balanced");
   const didInitialSelect = useRef(false);
   const needsScroll = useRef(!!initialDecisionId);
+  const prevCycleId = useRef<string | null>(null);
+
+  // 服务端是否有决策周期在跑（手动触发或定时调度都算）
+  const cycleActive = runningOnce || !!scheduler.currentCycleId;
 
   const refreshScheduler = useCallback(() => {
     simApi.getSchedulerStatus().then(setScheduler).catch(() => {});
@@ -26,9 +30,10 @@ export function AgentPage({ initialDecisionId, onNavigate }: { initialDecisionId
 
   useEffect(() => {
     refreshScheduler();
-    const id = setInterval(refreshScheduler, 5000);
+    // 周期进行中加密轮询，尽快捕捉到结束时刻
+    const id = setInterval(refreshScheduler, cycleActive ? 2000 : 5000);
     return () => clearInterval(id);
-  }, [refreshScheduler]);
+  }, [refreshScheduler, cycleActive]);
 
   useEffect(() => {
     simApi.getConfig().then(cfg => {
@@ -57,6 +62,14 @@ export function AgentPage({ initialDecisionId, onNavigate }: { initialDecisionId
   useEffect(() => {
     refreshDecisions();
   }, [refreshDecisions]);
+
+  // 周期从「进行中」变回空 → 刚结束，自动刷新决策列表；
+  // 这同时覆盖了 run-once 超过客户端超时、以及定时调度自动跑完的情况
+  useEffect(() => {
+    const cur = scheduler.currentCycleId ?? null;
+    if (prevCycleId.current && !cur) refreshDecisions();
+    prevCycleId.current = cur;
+  }, [scheduler.currentCycleId, refreshDecisions]);
 
   const toggleScheduler = async () => {
     if (scheduler.running) {
@@ -102,6 +115,19 @@ export function AgentPage({ initialDecisionId, onNavigate }: { initialDecisionId
             <div style={{ height: 16, width: 1, background: "var(--sim-border-strong)" }} />
             <div style={{ fontSize: 12, color: "var(--sim-text-mute)", display: "flex", gap: 16 }}>
               <span>上次运行: <span style={{ fontFamily: "var(--sim-mono)" }}>{scheduler.lastRunAt ? fmtDate(scheduler.lastRunAt) : "—"}</span></span>
+              {scheduler.lastRunError ? (
+                <span title={scheduler.lastRunError} style={{
+                  color: "var(--sim-up)", fontWeight: 600,
+                  maxWidth: 380, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                }}>
+                  运行失败: {scheduler.lastRunError}
+                </span>
+              ) : scheduler.lastRunDecisions != null ? (
+                <span>更新 <span style={{
+                  fontFamily: "var(--sim-mono)", fontWeight: 600,
+                  color: scheduler.lastRunDecisions > 0 ? "var(--sim-brand)" : "var(--sim-text-mute)",
+                }}>{scheduler.lastRunDecisions}</span> 个决策</span>
+              ) : null}
               <span>下次运行: <span style={{ fontFamily: "var(--sim-mono)" }}>{scheduler.nextRunAt ? fmtDate(scheduler.nextRunAt) : "—"}</span></span>
             </div>
             <div style={{ height: 16, width: 1, background: "var(--sim-border-strong)" }} />
@@ -120,10 +146,10 @@ export function AgentPage({ initialDecisionId, onNavigate }: { initialDecisionId
             <Btn kind={scheduler.running ? "danger" : "primary"} size="sm" onClick={toggleScheduler}>
               {scheduler.running ? "停止调度" : "启动调度"}
             </Btn>
-            <Btn kind="ghost" size="sm" onClick={() => handleRunOnce(false)} disabled={runningOnce}>
-              {runningOnce ? "运行中..." : "执行一次"}
+            <Btn kind="ghost" size="sm" onClick={() => handleRunOnce(false)} disabled={cycleActive}>
+              {cycleActive ? "运行中..." : "执行一次"}
             </Btn>
-            <Btn kind="soft" size="sm" onClick={() => handleRunOnce(true)} disabled={runningOnce}>
+            <Btn kind="soft" size="sm" onClick={() => handleRunOnce(true)} disabled={cycleActive}>
               强制执行
             </Btn>
           </div>

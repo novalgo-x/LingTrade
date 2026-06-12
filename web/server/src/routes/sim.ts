@@ -454,7 +454,7 @@ simRouter.post("/llm/test", async (req, res) => {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
       body: JSON.stringify({ model: model || "gpt-4o-mini", messages: [{ role: "user", content: "Hi" }], max_tokens: 1 }),
-      signal: AbortSignal.timeout(15000),
+      signal: AbortSignal.timeout(20000),
     });
     const latency = Date.now() - start;
     if (!r.ok) {
@@ -471,7 +471,7 @@ simRouter.post("/llm/test", async (req, res) => {
     setMultipleConfig(entries);
     res.json({ ok: true, latency });
   } catch (e: unknown) {
-    const msg = e instanceof Error && e.name === "TimeoutError" ? "请求超时 (15s)" : String(e);
+    const msg = e instanceof Error && e.name === "TimeoutError" ? "请求超时 (20s)" : String(e);
     res.json({ ok: false, error: msg });
   }
 });
