@@ -1114,7 +1114,13 @@ function AgentModelSection({ roleModel, setRoleModel, providerCfg, providerModel
           const effectiveModel = modelValid ? rm.model : pickDefaultChatModel(models) ?? "";
 
           if (effectiveProvider !== rm.provider || effectiveModel !== rm.model) {
-            setTimeout(() => setRoleModel(prev => ({ ...prev, [role.id]: { provider: effectiveProvider, model: effectiveModel } })), 0);
+            // 自动修正必须同步落库：否则页面显示的是修正值，配置库里还是旧模型，
+            // 决策 Agent 会照旧模型调用，与界面所见不一致
+            setTimeout(() => setRoleModel(prev => {
+              const next = { ...prev, [role.id]: { provider: effectiveProvider, model: effectiveModel } };
+              simApi.saveLlmRoles(next).catch(() => {});
+              return next;
+            }), 0);
           }
 
           return (

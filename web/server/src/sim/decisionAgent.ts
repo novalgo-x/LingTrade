@@ -21,11 +21,19 @@ function getLlmConfig(): LlmConfig {
   // process.env 快照是投研角色的配置（启动/保存时同步），仅作回退
   const provider = getConfig<string | undefined>("agent.decision.provider");
   const model = getConfig<string | undefined>("agent.decision.model");
-  const key = provider ? getConfig<string | undefined>(`llm.${provider}.key`) : undefined;
-  const baseUrl = provider ? getConfig<string | undefined>(`llm.${provider}.baseUrl`) : undefined;
   const timeoutMs = Number(process.env.LLM_TIMEOUT_MS) || 120000;
-  if (provider && model && key && baseUrl) {
-    return { baseUrl: stripBase(baseUrl), model, apiKey: key, timeoutMs, source: "decision-role" };
+  if (provider && model) {
+    const enabled = getConfig<unknown>(`llm.${provider}.enabled`);
+    const key = getConfig<string | undefined>(`llm.${provider}.key`);
+    const baseUrl = getConfig<string | undefined>(`llm.${provider}.baseUrl`);
+    const models = getConfig<unknown>(`llm.${provider}.models`);
+    // 分配的模型必须真实存在于该 provider 当前的可用模型列表：
+    // 更换 Base URL / Key 后列表会变，旧分配可能指向上游不存在的模型
+    const modelValid = !Array.isArray(models) || models.length === 0 || (models as string[]).includes(model);
+    if (enabled && key && baseUrl && modelValid) {
+      return { baseUrl: stripBase(baseUrl), model, apiKey: key, timeoutMs, source: "decision-role" };
+    }
+    log(`Decision role config unusable (provider=${provider}, model=${model}, enabled=${Boolean(enabled)}, modelInList=${modelValid}), falling back to env`);
   }
   return {
     baseUrl: stripBase(process.env.LLM_BASE_URL ?? "https://api.deepseek.com"),

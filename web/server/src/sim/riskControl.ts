@@ -62,9 +62,10 @@ export function checkBuyRisk(
 
   const approved = violations.length === 0;
 
-  // Calculate adjusted quantity if not approved due to position/cash limits
+  // 仅当违规都是「数量可解决」的（仓位 / 现金比例超限）才给缩量建议；
+  // 交易时段、持仓数、资金不足这类缩量救不了的违规必须整单拦截，不能借缩量路径放行
   let adjustedQuantity: number | undefined;
-  if (!approved && fundPass && holdingsPass) {
+  if (!approved && timePass && fundPass && holdingsPass) {
     const maxByPosition = totalAssets > 0 ? Math.floor((risk.maxPositionPct * totalAssets - existingValue) / price / 100) * 100 : 0;
     const maxByCash = Math.floor((snapshot.cashBalance * (1 - risk.minCashPct) - fees.total) / price / 100) * 100;
     const suggested = Math.min(maxByPosition, maxByCash);
