@@ -13,7 +13,8 @@ import { RealAshareDataSource } from "./data/realAshareDataSource.js";
 import { MockLlmProvider } from "./llm/mockLlmProvider.js";
 import { OpenAiCompatibleProvider } from "./llm/openAiCompatibleProvider.js";
 import { InvestmentWorkflow } from "./workflow/investmentWorkflow.js";
-import { join } from "path";
+import { join, resolve } from "path";
+import { pathToFileURL } from "node:url";
 import type { KnowledgeInsight } from "./domain/types.js";
 
 function usage(): string {
@@ -182,7 +183,7 @@ async function loadKbInsightsFromDb(): Promise<KnowledgeInsight[]> {
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (import.meta.url === pathToFileURL(resolve(process.argv[1] ?? "")).href) {
   main().catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
     console.error(message);

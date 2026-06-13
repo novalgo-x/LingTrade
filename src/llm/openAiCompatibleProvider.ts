@@ -34,6 +34,23 @@ function parseJsonObject(content: string): unknown {
   return JSON.parse(match[1]);
 }
 
+// 个别 OpenAI 兼容网关会忽略 stream:false 强制返回 SSE 流，
+// 此时按行聚合 data: 帧里的增量内容，等价于一次性响应
+function aggregateSseContent(raw: string): string {
+  let content = "";
+  for (const line of raw.split(/\r?\n/)) {
+    const t = line.trim();
+    if (!t.startsWith("data:")) continue;
+    const payload = t.slice(5).trim();
+    if (!payload || payload === "[DONE]") continue;
+    try {
+      const chunk = JSON.parse(payload) as { choices?: Array<{ delta?: { content?: string }; message?: { content?: string } }> };
+      content += chunk.choices?.[0]?.delta?.content ?? chunk.choices?.[0]?.message?.content ?? "";
+    } catch { /* 跳过无法解析的帧 */ }
+  }
+  return content;
+}
+
 export class OpenAiCompatibleProvider implements LlmProvider {
   readonly name = "openai-compatible";
 
@@ -60,6 +77,7 @@ export class OpenAiCompatibleProvider implements LlmProvider {
           model: this.config.model,
           messages,
           temperature: 0.2,
+          stream: false,
           response_format: { type: "json_object" },
         }),
         signal: controller.signal,
@@ -71,11 +89,17 @@ export class OpenAiCompatibleProvider implements LlmProvider {
         throw new Error(`LLM request failed with status ${response.status}: ${errBody.slice(0, 200)}`);
       }
 
-      const payload: unknown = await response.json();
-      if (!isChatCompletionResponse(payload)) {
-        throw new Error("LLM response did not include choices array");
+      const rawBody = await response.text();
+      let content: string | undefined;
+      if (rawBody.trimStart().startsWith("data:") || rawBody.trimStart().startsWith("event:")) {
+        content = aggregateSseContent(rawBody) || undefined;
+      } else {
+        const payload: unknown = JSON.parse(rawBody);
+        if (!isChatCompletionResponse(payload)) {
+          throw new Error("LLM response did not include choices array");
+        }
+        content = payload.choices[0]?.message?.content;
       }
-      const content = payload.choices[0]?.message?.content;
       if (!content) {
         throw new Error("LLM response did not include message content");
       }

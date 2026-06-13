@@ -16,6 +16,23 @@ function stripBase(url: string): string {
   return url.replace(/\/+$/, "").replace(/\/v\d+$/, "");
 }
 
+// 个别 OpenAI 兼容网关会忽略 stream:false 强制返回 SSE 流，
+// 此时按行聚合 data: 帧里的增量内容，等价于一次性响应
+function aggregateSseContent(raw: string): string {
+  let content = "";
+  for (const line of raw.split(/\r?\n/)) {
+    const t = line.trim();
+    if (!t.startsWith("data:")) continue;
+    const payload = t.slice(5).trim();
+    if (!payload || payload === "[DONE]") continue;
+    try {
+      const chunk = JSON.parse(payload) as { choices?: Array<{ delta?: { content?: string }; message?: { content?: string } }> };
+      content += chunk.choices?.[0]?.delta?.content ?? chunk.choices?.[0]?.message?.content ?? "";
+    } catch { /* 跳过无法解析的帧 */ }
+  }
+  return content;
+}
+
 function getLlmConfig(): LlmConfig {
   // 优先用「Agent 模型分配」里决策角色绑定的 provider/model，每次调用现场从 config 解析；
   // process.env 快照是投研角色的配置（启动/保存时同步），仅作回退
@@ -161,6 +178,7 @@ export async function makeDecisions(
         ],
         temperature: 0.3,
         max_tokens: 4096,
+        stream: false,
       }),
       signal: controller.signal,
     });
@@ -174,9 +192,16 @@ export async function makeDecisions(
       return { decisions: [], marketOutlook: `LLM error: ${resp.status}`, portfolioStrategy: "N/A", error: `LLM ${resp.status}: ${detail || "请求失败"}`.slice(0, 160) };
     }
 
-    const data = await resp.json() as { choices?: Array<{ message?: { content?: string } }>; usage?: { prompt_tokens?: number; completion_tokens?: number } };
-    const content = data.choices?.[0]?.message?.content;
-    log(`LLM responded in ${elapsedMs}ms, tokens: ${data.usage?.prompt_tokens ?? "?"}in/${data.usage?.completion_tokens ?? "?"}out`);
+    const rawBody = await resp.text();
+    let content: string | undefined;
+    if (rawBody.trimStart().startsWith("data:") || rawBody.trimStart().startsWith("event:")) {
+      content = aggregateSseContent(rawBody) || undefined;
+      log(`LLM responded in ${elapsedMs}ms (SSE stream aggregated, ${rawBody.length} bytes)`);
+    } else {
+      const data = JSON.parse(rawBody) as { choices?: Array<{ message?: { content?: string } }>; usage?: { prompt_tokens?: number; completion_tokens?: number } };
+      content = data.choices?.[0]?.message?.content;
+      log(`LLM responded in ${elapsedMs}ms, tokens: ${data.usage?.prompt_tokens ?? "?"}in/${data.usage?.completion_tokens ?? "?"}out`);
+    }
 
     if (!content) {
       log("Empty LLM response content");
