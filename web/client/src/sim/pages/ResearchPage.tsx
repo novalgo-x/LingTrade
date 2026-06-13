@@ -351,31 +351,33 @@ export function ResearchPage({ initialReportId }: { initialReportId?: number } =
                   borderLeft: active ? "3px solid var(--sim-brand)" : "3px solid transparent",
                   background: active ? "var(--sim-bg-soft)" : "transparent",
                 }}>
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-                    <span style={{ fontWeight: 500, fontSize: 13 }}>{s.name || s.ticker}</span>
-                    {hasReport && act ? (
-                      <ActionTag action={act} size="sm" />
-                    ) : (
-                      <Tag kind="ghost" size="sm">未生成</Tag>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                  <div style={{ minWidth: 0, flex: 1 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0, marginBottom: 4 }}>
+                      <span style={{ fontWeight: 500, fontSize: 13 }}>{s.name || s.ticker}</span>
+                      {hasReport && act ? (
+                        <ActionTag action={act} size="sm" />
+                      ) : (
+                        <Tag kind="ghost" size="sm">未生成</Tag>
+                      )}
+                    </div>
+                    <div style={{ fontSize: 11 }}>
+                      <span style={{ fontFamily: "var(--sim-mono)", color: "var(--sim-text-mute)" }}>
+                        {s.ticker}.{s.exchange}{rep ? ` · v${rep.report_count}` : ""}
+                      </span>
+                    </div>
+                    {hasReport && rep && (
+                      <div style={{ marginTop: 6, fontSize: 10.5, color: "var(--sim-text-mute)", fontFamily: "var(--sim-mono)", display: "flex", alignItems: "center", gap: 4 }}>
+                        <span>目标 ¥{typeof rep.target_price === "number" ? rep.target_price.toFixed(2) : "-"}</span>
+                      </div>
                     )}
                   </div>
-                </div>
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: 11 }}>
-                  <span style={{ fontFamily: "var(--sim-mono)", color: "var(--sim-text-mute)" }}>
-                    {s.ticker}.{s.exchange}{rep ? ` · v${rep.report_count}` : ""}
-                  </span>
-                  <span style={{ color: stale ? "#9A6700" : !hasReport ? "var(--sim-text-faint)" : "var(--sim-text-mute)", display: "inline-flex", alignItems: "center", gap: 4 }}>
+                  <span style={{ flexShrink: 0, fontSize: 11, color: stale ? "#9A6700" : !hasReport ? "var(--sim-text-faint)" : "var(--sim-text-mute)", display: "inline-flex", alignItems: "center", gap: 4 }}>
                     {analyzing ? (
-                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--sim-text-faint)" strokeWidth="2" strokeLinecap="round" style={{ animation: "sim-spin 1s linear infinite", marginRight: 8 }}><path d="M21 12a9 9 0 1 1-6.219-8.56" /></svg>
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--sim-text-faint)" strokeWidth="2" strokeLinecap="round" style={{ animation: "sim-spin 1s linear infinite" }}><path d="M21 12a9 9 0 1 1-6.219-8.56" /></svg>
                     ) : rep ? relativeTime(rep.created_at) : "-"}
                   </span>
                 </div>
-                {hasReport && rep && (
-                  <div style={{ marginTop: 6, fontSize: 10.5, color: "var(--sim-text-mute)", fontFamily: "var(--sim-mono)", display: "flex", alignItems: "center", gap: 4 }}>
-                    <span>目标 ¥{typeof rep.target_price === "number" ? rep.target_price.toFixed(2) : "-"}</span>
-                  </div>
-                )}
               </div>
             );
           })}
@@ -475,6 +477,9 @@ function StockOverviewPanel({ stock, reports, latestReport, onAnalyze, isAnalyzi
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [heroData, setHeroData] = useState<Record<string, any> | null>(null);
   const [currentPrice, setCurrentPrice] = useState<number | null>(null);
+  const [headlineExpanded, setHeadlineExpanded] = useState(false);
+  const headlineRef = useRef<HTMLDivElement>(null);
+  const [headlineClamped, setHeadlineClamped] = useState(false);
 
   useEffect(() => {
     if (latestFull) {
@@ -494,6 +499,16 @@ function StockOverviewPanel({ stock, reports, latestReport, onAnalyze, isAnalyzi
       if (typeof p === "number") setCurrentPrice(p);
     }).catch(() => {});
   }, [stock.ticker]);
+
+  const decision = heroData?.decision ?? {};
+  const reportData = heroData?.report ?? {};
+  const headline = reportData?.investmentSummary ?? reportData?.coreThesis?.[0] ?? "";
+
+  useEffect(() => {
+    const el = headlineRef.current;
+    if (!el) return;
+    setHeadlineClamped(el.scrollHeight > el.clientHeight + 1);
+  }, [headline]);
 
   if (!latestReport) {
     return (
@@ -522,15 +537,13 @@ function StockOverviewPanel({ stock, reports, latestReport, onAnalyze, isAnalyzi
     );
   }
 
-  const decision = heroData?.decision ?? {};
-  const reportData = heroData?.report ?? {};
   const analysis = heroData?.analysis ?? {};
   const action = normalizeAction(latestFull?.action ?? decision?.action);
   const confidence = latestFull?.confidence ?? decision?.confidence;
   const targetPrice = latestFull?.target_price ?? decision?.targetPrice;
   const risks = Array.isArray(reportData?.risks) ? reportData.risks : (Array.isArray(analysis?.risks) ? analysis.risks : []);
   const catalysts = Array.isArray(reportData?.catalysts) ? reportData.catalysts : [];
-  const headline = reportData?.investmentSummary ?? reportData?.coreThesis?.[0] ?? "";
+  const timeHorizon = decision?.timeHorizon;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -551,10 +564,46 @@ function StockOverviewPanel({ stock, reports, latestReport, onAnalyze, isAnalyzi
                 v{reports.length}
               </span>
             </div>
-            <div style={{ fontSize: 14, fontWeight: 500, lineHeight: 1.55, maxWidth: 720, opacity: 0.95 }}>
-              {typeof headline === "string" ? headline.slice(0, 120) : ""}
+            <div>
+              <div
+                ref={headlineRef}
+                style={{
+                  fontSize: 14, fontWeight: 500, lineHeight: 1.55, maxWidth: 720, opacity: 0.95,
+                  transition: "max-height 0.18s ease",
+                  ...(headlineExpanded ? {} : { display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical" as const, overflow: "hidden" }),
+                }}
+              >
+                {typeof headline === "string" ? headline : ""}
+              </div>
+              {headlineClamped && (
+                <span
+                  onClick={() => setHeadlineExpanded(v => !v)}
+                  style={{
+                    fontSize: 12, fontWeight: 500, color: "rgba(255,255,255,0.85)", cursor: "pointer",
+                    userSelect: "none", marginTop: 6, display: "inline-flex", alignItems: "center", gap: 3,
+                    padding: "4px 6px", borderRadius: 6, transition: "background 0.12s",
+                  }}
+                  onMouseEnter={e => (e.currentTarget.style.background = "rgba(255,255,255,0.12)")}
+                  onMouseLeave={e => (e.currentTarget.style.background = "transparent")}
+                >
+                  {headlineExpanded ? "收起" : "展开摘要"}
+                  <svg
+                    width="14" height="14" viewBox="0 0 24 24" fill="none"
+                    stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+                    style={{ transition: "transform 0.12s", transform: headlineExpanded ? "rotate(180deg)" : "rotate(0deg)" }}
+                  >
+                    <polyline points="6 9 12 15 18 9" />
+                  </svg>
+                </span>
+              )}
             </div>
           </div>
+          {timeHorizon && (
+            <div style={{ textAlign: "right", flexShrink: 0 }}>
+              <div style={{ fontSize: 11, opacity: 0.7, letterSpacing: "0.04em" }}>时间窗</div>
+              <div style={{ fontSize: 12.5, marginTop: 4, maxWidth: 280, lineHeight: 1.4 }}>{String(timeHorizon)}</div>
+            </div>
+          )}
         </div>
 
         <div style={{
@@ -753,6 +802,14 @@ function ReportDetailView({ report, ticker, onBack, onDelete }: {
   const headline = investReport?.investmentSummary ?? investReport?.coreThesis?.[0] ?? "";
 
   const [currentPrice, setCurrentPrice] = useState<number | null>(null);
+  const [headlineExpanded, setHeadlineExpanded] = useState(false);
+  const headlineRef = useRef<HTMLDivElement>(null);
+  const [headlineClamped, setHeadlineClamped] = useState(false);
+  useEffect(() => {
+    const el = headlineRef.current;
+    if (!el) return;
+    setHeadlineClamped(el.scrollHeight > el.clientHeight + 1);
+  }, [headline]);
   useEffect(() => {
     if (!ticker) return;
     simApi.getQuote(ticker).then(q => {
@@ -824,8 +881,38 @@ function ReportDetailView({ report, ticker, onBack, onDelete }: {
                 </span>
                 <span style={{ opacity: 0.7, fontFamily: "var(--sim-mono)", fontSize: 12 }}>#{report.id}</span>
               </div>
-              <div style={{ fontSize: 14, fontWeight: 500, lineHeight: 1.55, maxWidth: 720, opacity: 0.95 }}>
-                {typeof headline === "string" ? headline.slice(0, 200) : ""}
+              <div>
+                <div
+                  ref={headlineRef}
+                  style={{
+                    fontSize: 14, fontWeight: 500, lineHeight: 1.55, maxWidth: 720, opacity: 0.95,
+                    transition: "max-height 0.18s ease",
+                    ...(headlineExpanded ? {} : { display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical" as const, overflow: "hidden" }),
+                  }}
+                >
+                  {typeof headline === "string" ? headline : ""}
+                </div>
+                {headlineClamped && (
+                  <span
+                    onClick={() => setHeadlineExpanded(v => !v)}
+                    style={{
+                      fontSize: 12, fontWeight: 500, color: "rgba(255,255,255,0.85)", cursor: "pointer",
+                      userSelect: "none", marginTop: 6, display: "inline-flex", alignItems: "center", gap: 3,
+                      padding: "4px 6px", borderRadius: 6, transition: "background 0.12s",
+                    }}
+                    onMouseEnter={e => (e.currentTarget.style.background = "rgba(255,255,255,0.12)")}
+                    onMouseLeave={e => (e.currentTarget.style.background = "transparent")}
+                  >
+                    {headlineExpanded ? "收起" : "展开摘要"}
+                    <svg
+                      width="14" height="14" viewBox="0 0 24 24" fill="none"
+                      stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+                      style={{ transition: "transform 0.12s", transform: headlineExpanded ? "rotate(180deg)" : "rotate(0deg)" }}
+                    >
+                      <polyline points="6 9 12 15 18 9" />
+                    </svg>
+                  </span>
+                )}
               </div>
             </div>
             {decision?.timeHorizon && (
@@ -856,7 +943,7 @@ function ReportDetailView({ report, ticker, onBack, onDelete }: {
                   <Tag kind="down" size="sm">{risks.length}</Tag>
                 </div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                  {risks.slice(0, 4).map((r: unknown, i: number) => (
+                  {risks.map((r: unknown, i: number) => (
                     <RiskItem key={i} text={toText(r)} level="warn" />
                   ))}
                 </div>
@@ -868,7 +955,7 @@ function ReportDetailView({ report, ticker, onBack, onDelete }: {
                   <Tag kind="up" size="sm">{catalysts.length}</Tag>
                 </div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                  {catalysts.slice(0, 4).map((c: unknown, i: number) => (
+                  {catalysts.map((c: unknown, i: number) => (
                     <RiskItem key={i} text={toText(c)} level="info" />
                   ))}
                   {catalysts.length === 0 && (
