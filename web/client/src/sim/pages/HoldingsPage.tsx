@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { simApi } from "../api";
 import { Card } from "../components/Card";
 import { Kpi } from "../components/Kpi";
@@ -9,6 +9,7 @@ import { fmtMoney, fmtPct, fmtSigned, fmtDir, dirColor } from "../utils";
 import type { SimAccount, SimPosition } from "../types";
 
 const CACHE_KEY = "holdings_cache";
+const CACHE_KEY_MINUTE = "holdings_minute_cache";
 
 interface HoldingsCache {
   account: SimAccount;
@@ -26,6 +27,17 @@ function writeCache(account: SimAccount, positions: SimPosition[]) {
   try { sessionStorage.setItem(CACHE_KEY, JSON.stringify({ account, positions })); } catch {}
 }
 
+function readMinuteCache(): Record<string, number[]> {
+  try {
+    const raw = sessionStorage.getItem(CACHE_KEY_MINUTE);
+    return raw ? JSON.parse(raw) as Record<string, number[]> : {};
+  } catch { return {}; }
+}
+
+function writeMinuteCache(map: Record<string, number[]>) {
+  try { sessionStorage.setItem(CACHE_KEY_MINUTE, JSON.stringify(map)); } catch {}
+}
+
 const EMPTY_ACCOUNT: SimAccount = {
   id: 0, name: "", initialBalance: 1000000, cashBalance: 0, totalAssets: 0,
   marketValue: 0, todayPnl: 0, todayPnlPct: 0, totalPnl: 0, totalPnlPct: 0,
@@ -38,6 +50,8 @@ export function HoldingsPage() {
   const [positions, setPositions] = useState<SimPosition[]>(cached.current?.positions ?? []);
   const [loaded, setLoaded] = useState(!!cached.current);
   const [sortKey, setSortKey] = useState<"marketValue" | "pnl" | "todayPnl" | "weight">("marketValue");
+  const [sparkMap, setSparkMap] = useState<Record<string, number[]>>(() => readMinuteCache());
+  const [marketState, setMarketState] = useState<string>("closed");
 
   useEffect(() => {
     Promise.all([
@@ -51,7 +65,36 @@ export function HoldingsPage() {
       }
       setLoaded(true);
     });
+    simApi.getMarketState().then(r => setMarketState(r.state)).catch(() => {});
   }, []);
+
+  const tickers = useMemo(() => positions.map(p => p.ticker), [positions]);
+
+  const fetchSparklines = useCallback(async () => {
+    if (tickers.length === 0) return;
+    const mMap: Record<string, number[]> = {};
+    const CONCURRENCY = 4;
+    for (let i = 0; i < tickers.length; i += CONCURRENCY) {
+      const batch = tickers.slice(i, i + CONCURRENCY);
+      const results = await Promise.all(batch.map(t =>
+        simApi.getMinuteChart(t).then(pts => [t, pts.map(p => p.price)] as const).catch(() => [t, [] as number[]] as const)
+      ));
+      for (const [t, prices] of results) {
+        if (prices.length > 0) mMap[t] = prices;
+      }
+    }
+    setSparkMap(prev => ({ ...prev, ...mMap }));
+    writeMinuteCache({ ...readMinuteCache(), ...mMap });
+  }, [tickers]);
+
+  const isTrading = marketState === "open" || marketState === "lunch";
+
+  useEffect(() => {
+    fetchSparklines();
+    if (!isTrading) return;
+    const timer = setInterval(fetchSparklines, 120_000);
+    return () => clearInterval(timer);
+  }, [fetchSparklines, isTrading]);
 
   const sorted = useMemo(() =>
     [...positions].sort((a, b) => Math.abs(b[sortKey]) - Math.abs(a[sortKey]))
@@ -181,7 +224,13 @@ export function HoldingsPage() {
                             </span>
                           </td>
                           <td style={td}>
-                            <Sparkline data={[p.prevClose, p.currentPrice]} width={60} height={24} prevClose={p.prevClose} />
+                            <Sparkline
+                              data={sparkMap[p.ticker]?.length ? sparkMap[p.ticker]! : [p.prevClose, p.currentPrice]}
+                              width={72}
+                              height={26}
+                              prevClose={p.prevClose}
+                              fill={false}
+                            />
                           </td>
                           <td style={{ ...td, textAlign: "right", fontFamily: "var(--sim-mono)" }}>{p.quantity.toLocaleString()}</td>
                           <td style={{ ...td, textAlign: "right", fontFamily: "var(--sim-mono)", color: "var(--sim-text-soft)" }}>{p.avgCost.toFixed(2)}</td>
