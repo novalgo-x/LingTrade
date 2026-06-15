@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { api } from "../../api.js";
 import { simApi } from "../api.js";
-import { useSSE } from "../../hooks/useSSE.js";
+import { GenerationFlow, GenProgressBanner } from "../components/GenerationFlow.js";
+import { useGenerationFlow, type GenFlowState } from "../../hooks/useGenerationFlow.js";
 import type { Stock, ReportSummary, ReportFull, RecommendationAction } from "../../types.js";
 import { Card } from "../components/Card.js";
 import { Tag, ActionTag } from "../components/Tag.js";
@@ -72,16 +73,43 @@ function verdictGradient(action: RecommendationAction): string {
   return "linear-gradient(135deg, #5A554D 0%, #3F3A33 100%)";
 }
 
+type GenOutcome = { kind: "done" | "failed"; key: string };
+
+// 列表「未读小点」的判定依据：某股最近一次生成的结果。失败任务优先（红点）；
+// 否则有成功报告即取报告时间戳（绿点）。key 同时用于「是否已读」比对。
+function outcomeOf(
+  stockId: number,
+  reports: Map<number, ReportSummary>,
+  tasks: Map<number, { status: string; taskId: number; completedAt: string | null }>,
+): GenOutcome | null {
+  const task = tasks.get(stockId);
+  // 失败 key 取「本次运行结束时刻」：重试复用同一 taskId，但每次失败 completedAt 都会刷新，
+  // 这样重试后再次失败也能产生新的未读小点（仅用 taskId 则 key 不变，重试失败不会提示）。
+  if (task?.status === "failed") return { kind: "failed", key: `f${task.completedAt ?? task.taskId}` };
+  const rep = reports.get(stockId);
+  if (rep) return { kind: "done", key: rep.created_at };
+  return null;
+}
+
 export function ResearchPage({ initialReportId }: { initialReportId?: number } = {}) {
   const [stocks, setStocks] = useState<Stock[]>([]);
   const [selectedStockId, setSelectedStockId] = useState<number | null>(null);
   const [reports, setReports] = useState<ReportSummary[]>([]);
   const [latestReports, setLatestReports] = useState<Map<number, ReportSummary>>(new Map());
+  // 每股最近一次任务状态（含失败），与 latestReports 一起决定列表未读小点的颜色/有无
+  const [latestTasks, setLatestTasks] = useState<Map<number, { status: string; taskId: number; completedAt: string | null }>>(new Map());
   const [viewReport, setViewReport] = useState<ReportFull | null>(null);
   const [showAdd, setShowAdd] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<{ type: "stock" | "report"; id: number; name: string } | null>(null);
   const [taskMap, setTaskMap] = useState<Map<number, number>>(new Map());
   const taskId = selectedStockId ? (taskMap.get(selectedStockId) ?? null) : null;
+  const [genOpen, setGenOpen] = useState(false);
+  const [genEpoch, setGenEpoch] = useState(0);
+  const dismissedRef = useRef<Set<number>>(new Set());
+  const flow = useGenerationFlow(taskId, genEpoch);
+  // 全列表「生成中」的真实来源：轮询所有运行中的任务（含批量当前那只、后台未选中的股）
+  const [runningStocks, setRunningStocks] = useState<Set<number>>(new Set());
+  const runningStocksRef = useRef<Set<number>>(new Set());
   const [toastMsg, setToastMsg] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("all");
@@ -98,22 +126,45 @@ export function ResearchPage({ initialReportId }: { initialReportId?: number } =
 
   const didInitialJump = useRef(false);
   const needsScroll = useRef(!!initialReportId);
+  // 列表「未读」标记：记录每只股已读的「最近一次生成结果」标识（成功报告时间戳 / 失败任务号）；
+  // 结果比这更新即视为未读，生成完（成功或失败）都会出现小点，点击该股即清除。
+  const seenOutcomeRef = useRef<Map<number, string>>(new Map());
+  const seenInitRef = useRef(false);
+  // 始终持有最新 latestReports，供下面「标记已读」effect 读取而无需把它放进依赖
+  const latestReportsRef = useRef(latestReports);
+  latestReportsRef.current = latestReports;
+  const latestTasksRef = useRef(latestTasks);
+  latestTasksRef.current = latestTasks;
 
-  const sse = useSSE(taskId);
   const selectedStock = stocks.find(s => s.id === selectedStockId) ?? null;
 
   const loadStocks = useCallback(async () => {
-    const [list, latests] = await Promise.all([
+    const [list, latests, tasks] = await Promise.all([
       api.listStocks(),
       api.getLatestReports(),
+      api.getLatestTasks(),
     ]);
     setStocks(list);
-    if (list.length > 0 && !selectedStockId && !initialReportId) setSelectedStockId(list[0]!.id);
+    // 仅在尚未选中任何标的时默认选第一只；用函数式更新避免闭包里捕获到过期的 selectedStockId
+    if (list.length > 0 && !initialReportId) setSelectedStockId((prev) => prev ?? list[0]!.id);
     const reportMap = new Map<number, ReportSummary>();
     for (const rep of latests) {
       reportMap.set(rep.stock_id, rep);
     }
     setLatestReports(reportMap);
+    const latestTaskMap = new Map<number, { status: string; taskId: number; completedAt: string | null }>();
+    for (const t of tasks) {
+      latestTaskMap.set(t.stockId, { status: t.status, taskId: t.taskId, completedAt: t.completedAt });
+    }
+    setLatestTasks(latestTaskMap);
+    // 首次加载时把现有结果（成功报告 / 失败任务）全部标为已读，避免历史结果被误判为未读
+    if (!seenInitRef.current) {
+      seenInitRef.current = true;
+      for (const s of list) {
+        const oc = outcomeOf(s.id, reportMap, latestTaskMap);
+        if (oc) seenOutcomeRef.current.set(s.id, oc.key);
+      }
+    }
     return list;
   }, []);
 
@@ -122,6 +173,27 @@ export function ResearchPage({ initialReportId }: { initialReportId?: number } =
     simApi.getTushare().then(t => setTushareOk(!!t.token || !!t.rawToken)).catch(() => setTushareOk(false));
     simApi.getLlmStatus().then(s => setLlmOk(s.configured)).catch(() => setLlmOk(false));
   }, []);
+
+  // 轮询运行中的任务：哪些股在生成 = 列表转圈的唯一来源；某股离开运行集（生成完）即刷新报告以出现未读小点
+  const refreshActiveTasks = useCallback(async () => {
+    try {
+      const tasks = await api.getActiveTasks();
+      const next = new Set(tasks.map(t => t.stockId));
+      const prev = runningStocksRef.current;
+      let someFinished = false;
+      for (const id of prev) if (!next.has(id)) { someFinished = true; break; }
+      runningStocksRef.current = next;
+      setRunningStocks(next);
+      if (someFinished) loadStocks();
+    } catch { /* 忽略 */ }
+  }, [loadStocks]);
+
+  // 进入研报页即常态轮询活跃任务（开销极小），保证后台/未选中股的"生成中"也能持续转圈
+  useEffect(() => {
+    refreshActiveTasks();
+    const id = setInterval(refreshActiveTasks, 3000);
+    return () => clearInterval(id);
+  }, [refreshActiveTasks]);
 
   const handleAddClick = () => {
     if (tushareOk === false) {
@@ -145,16 +217,23 @@ export function ResearchPage({ initialReportId }: { initialReportId?: number } =
 
   useEffect(() => {
     if (!selectedStockId) { setReports([]); return; }
-    api.listReports(selectedStockId).then(setReports).catch(() => setReports([]));
     const stockId = selectedStockId;
-    api.getRunningTask(stockId).then(r => {
-      setTaskMap(prev => {
-        const next = new Map(prev);
-        if (r.taskId) next.set(stockId, r.taskId);
-        else next.delete(stockId);
-        return next;
-      });
+    api.listReports(stockId).then(setReports).catch(() => setReports([]));
+    // 恢复最近一次「运行中 / 失败」的生成进度（未被清除、且尚未在跟踪），用于刷新后回看失败原因
+    api.getLatestTask(stockId).then(r => {
+      if (!r.taskId || (r.status !== "running" && r.status !== "failed")) return;
+      if (dismissedRef.current.has(r.taskId)) return;
+      setTaskMap(prev => prev.has(stockId) ? prev : new Map(prev).set(stockId, r.taskId!));
     }).catch(() => {});
+  }, [selectedStockId]);
+
+  // 切换到某只股时，把它当前的最新报告标记为已读；故意只依赖 selectedStockId：
+  // 不能依赖 latestReports，否则"生成完成产生新报告"会把当前选中股也立刻标已读，未读小点就永远不出现。
+  // 新报告的已读由「点击列表项」时记录（见列表项 onClick）。
+  useEffect(() => {
+    if (!selectedStockId) return;
+    const oc = outcomeOf(selectedStockId, latestReportsRef.current, latestTasksRef.current);
+    if (oc) seenOutcomeRef.current.set(selectedStockId, oc.key);
   }, [selectedStockId]);
 
   const handleAnalyze = async () => {
@@ -164,32 +243,49 @@ export function ResearchPage({ initialReportId }: { initialReportId?: number } =
     try {
       const { taskId: newTaskId } = await api.startAnalysis(stockId);
       setTaskMap(prev => new Map(prev).set(stockId, newTaskId));
+      setGenOpen(true);
+      const nextRunning = new Set(runningStocksRef.current).add(stockId);
+      runningStocksRef.current = nextRunning;
+      setRunningStocks(nextRunning);
     } catch (err) {
       setToastMsg(err instanceof Error ? err.message : "启动分析失败");
     }
   };
 
+  // 生成完成：刷新侧栏与历史列表（保留进度入口，由用户在结果卡点击查看完整报告）
+  const completedReportRef = useRef<number | null>(null);
   useEffect(() => {
-    if (sse.status === "completed" && sse.reportId !== null) {
+    if (flow.phase === "done" && flow.reportId != null && completedReportRef.current !== flow.reportId) {
+      completedReportRef.current = flow.reportId;
       const stockId = selectedStockId;
-      const timer = setTimeout(() => {
-        if (stockId) {
-          setTaskMap(prev => { const next = new Map(prev); next.delete(stockId); return next; });
-          api.listReports(stockId).then(setReports);
-        }
-        loadStocks();
-        api.getReport(sse.reportId!).then(setViewReport);
-      }, 1500);
-      return () => clearTimeout(timer);
+      if (stockId) api.listReports(stockId).then(setReports).catch(() => {});
+      loadStocks();
     }
-    if (sse.status === "error" && selectedStockId) {
-      const stockId = selectedStockId;
-      const timer = setTimeout(() => {
-        setTaskMap(prev => { const next = new Map(prev); next.delete(stockId); return next; });
-      }, 30000);
-      return () => clearTimeout(timer);
-    }
-  }, [sse.status, sse.reportId]);
+  }, [flow.phase, flow.reportId, selectedStockId, loadStocks]);
+
+  const handleRetryGen = async () => {
+    if (taskId == null) return;
+    try { await api.retryTask(taskId); setGenEpoch(e => e + 1); }
+    catch (err) { setToastMsg(err instanceof Error ? err.message : "重试失败"); }
+  };
+
+  // 取消：中断并放弃这次运行，清除进度入口并返回概览
+  const handleCancelGen = async () => {
+    if (taskId == null) return;
+    try { await api.cancelTask(taskId); } catch { /* 忽略 */ }
+    dismissedRef.current.add(taskId);
+    const stockId = selectedStockId;
+    setTaskMap(prev => { const next = new Map(prev); if (stockId) next.delete(stockId); return next; });
+    setGenOpen(false);
+  };
+
+  // 清除进度记录：仅移除概览页的进度入口条，已生成的报告保留
+  const handleDismissGen = () => {
+    if (taskId != null) dismissedRef.current.add(taskId);
+    const stockId = selectedStockId;
+    setTaskMap(prev => { const next = new Map(prev); if (stockId) next.delete(stockId); return next; });
+    setGenOpen(false);
+  };
 
   const openReport = async (reportId: number) => {
     try {
@@ -257,7 +353,11 @@ export function ResearchPage({ initialReportId }: { initialReportId?: number } =
     } catch {}
   };
 
-  const isAnalyzing = taskId !== null && (sse.status === "streaming" || sse.status === "connecting");
+  // 「分析中」按钮态：以轮询得到的运行集为真实来源；flow 仅在已加载到真实状态后参与判断，
+  // 避免切到「失败/历史」标的时 flow 短暂停留在初始 phase="running" 而把生成按钮误显示成「分析中…」
+  const isAnalyzing =
+    selectedStockId !== null &&
+    (runningStocks.has(selectedStockId) || (flow.loaded && flow.phase === "running"));
 
   const coverageCount = useMemo(() => {
     let covered = 0;
@@ -339,12 +439,16 @@ export function ResearchPage({ initialReportId }: { initialReportId?: number } =
             const act = rep ? normalizeAction(rep.action) : null;
             const stale = rep ? isStale(rep.created_at) : false;
             const hasReport = !!rep;
-            const batchRunning = batch?.running && batch.results.some(r => r.ticker === s.ticker && r.status === "running");
-            const analyzing = taskMap.has(s.id) || batchRunning;
+            const running = runningStocks.has(s.id) || (active && flow.loaded && flow.phase === "running");
+            const outcome = outcomeOf(s.id, latestReports, latestTasks);
+            const unread = !!outcome && !active && !running && outcome.key !== (seenOutcomeRef.current.get(s.id) ?? "");
             return (
               <div key={s.id}
                 ref={active && needsScroll.current ? el => { if (el) { el.scrollIntoView({ block: "start" }); needsScroll.current = false; } } : undefined}
-                onClick={() => { setSelectedStockId(s.id); setViewReport(null); }}
+                onClick={() => {
+                  setSelectedStockId(s.id); setViewReport(null); setGenOpen(false);
+                  if (outcome) seenOutcomeRef.current.set(s.id, outcome.key);
+                }}
                 style={{
                   padding: "12px 16px", cursor: "pointer",
                   borderBottom: "1px solid var(--sim-hairline)",
@@ -355,6 +459,11 @@ export function ResearchPage({ initialReportId }: { initialReportId?: number } =
                   <div style={{ minWidth: 0, flex: 1 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0, marginBottom: 4 }}>
                       <span style={{ fontWeight: 500, fontSize: 13 }}>{s.name || s.ticker}</span>
+                      {running ? (
+                        <span style={{ width: 11, height: 11, borderRadius: "50%", border: "2px solid rgba(20,17,13,0.12)", borderTopColor: "var(--sim-accent)", display: "inline-block", animation: "sim-spin 0.7s linear infinite", flexShrink: 0 }} />
+                      ) : unread ? (
+                        <span title={outcome!.kind === "failed" ? "生成失败未读" : "新报告未读"} style={{ width: 7, height: 7, borderRadius: "50%", background: outcome!.kind === "failed" ? "var(--sim-up)" : "var(--sim-down)", flexShrink: 0 }} />
+                      ) : null}
                       {hasReport && act ? (
                         <ActionTag action={act} size="sm" />
                       ) : (
@@ -373,9 +482,7 @@ export function ResearchPage({ initialReportId }: { initialReportId?: number } =
                     )}
                   </div>
                   <span style={{ flexShrink: 0, fontSize: 11, color: stale ? "#9A6700" : !hasReport ? "var(--sim-text-faint)" : "var(--sim-text-mute)", display: "inline-flex", alignItems: "center", gap: 4 }}>
-                    {analyzing ? (
-                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--sim-text-faint)" strokeWidth="2" strokeLinecap="round" style={{ animation: "sim-spin 1s linear infinite" }}><path d="M21 12a9 9 0 1 1-6.219-8.56" /></svg>
-                    ) : rep ? relativeTime(rep.created_at) : "-"}
+                    {rep ? relativeTime(rep.created_at) : "-"}
                   </span>
                 </div>
               </div>
@@ -409,22 +516,30 @@ export function ResearchPage({ initialReportId }: { initialReportId?: number } =
             onBack={() => setViewReport(null)}
             onDelete={id => setPendingDelete({ type: "report", id, name: `报告 #${id}` })}
           />
+        ) : selectedStock && genOpen && taskId !== null ? (
+          <GenerationFlow
+            stock={selectedStock}
+            flow={flow}
+            onBack={() => setGenOpen(false)}
+            onCancel={handleCancelGen}
+            onRetry={handleRetryGen}
+            onOpenReport={(rid) => { setGenOpen(false); openReport(rid); }}
+          />
         ) : selectedStock ? (
           <StockOverviewPanel
             stock={selectedStock}
             reports={reports}
             latestReport={latestReports.get(selectedStock.id) ?? null}
+            genFlow={taskId !== null && flow.loaded ? flow : null}
             onAnalyze={handleAnalyze}
             isAnalyzing={isAnalyzing}
+            onOpenGen={() => setGenOpen(true)}
+            onDismissGen={handleDismissGen}
             onOpenReport={openReport}
             onDeleteStock={() => setPendingDelete({ type: "stock", id: selectedStock.id, name: selectedStock.name || selectedStock.ticker })}
           />
         ) : (
           <Card><div style={{ padding: 60, textAlign: "center", color: "var(--sim-text-mute)", fontSize: 14 }}>选择一只股票查看研报</div></Card>
-        )}
-
-        {!viewReport && taskId !== null && (isAnalyzing || sse.status === "completed" || sse.status === "error") && (
-          <LogPanel sse={sse} />
         )}
       </div>
 
@@ -464,15 +579,19 @@ function SidebarStat({ label, value, color }: { label: string; value: string | n
   );
 }
 
-function StockOverviewPanel({ stock, reports, latestReport, onAnalyze, isAnalyzing, onOpenReport, onDeleteStock }: {
+function StockOverviewPanel({ stock, reports, latestReport, genFlow, onAnalyze, isAnalyzing, onOpenGen, onDismissGen, onOpenReport, onDeleteStock }: {
   stock: Stock;
   reports: ReportSummary[];
   latestReport: ReportSummary | null;
+  genFlow: GenFlowState | null;
   onAnalyze: () => void;
   isAnalyzing: boolean;
+  onOpenGen: () => void;
+  onDismissGen: () => void;
   onOpenReport: (id: number) => void;
   onDeleteStock: () => void;
 }) {
+  const banner = genFlow ? <GenProgressBanner flow={genFlow} onOpen={onOpenGen} onDismiss={onDismissGen} /> : null;
   const latestFull = reports[0];
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [heroData, setHeroData] = useState<Record<string, any> | null>(null);
@@ -533,6 +652,7 @@ function StockOverviewPanel({ stock, reports, latestReport, onAnalyze, isAnalyzi
             </Btn>
           </div>
         </Card>
+        {banner}
       </div>
     );
   }
@@ -727,6 +847,8 @@ function StockOverviewPanel({ stock, reports, latestReport, onAnalyze, isAnalyzi
           )}
         </div>
       </Card>
+
+      {banner}
     </div>
   );
 }
@@ -1278,41 +1400,6 @@ function MetricBox({ label, value }: { label: string; value: string }) {
       <div style={{ fontSize: 11, color: "var(--sim-text-mute)", marginBottom: 4 }}>{label}</div>
       <div style={{ fontFamily: "var(--sim-mono)", fontSize: 16, fontWeight: 600 }}>{value}</div>
     </div>
-  );
-}
-
-function LogPanel({ sse }: { sse: ReturnType<typeof useSSE> }) {
-  const [collapsed, setCollapsed] = useState(false);
-  const endRef = useRef<HTMLDivElement>(null);
-  const isActive = sse.status === "streaming" || sse.status === "connecting";
-
-  useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [sse.logs.length]);
-
-  return (
-    <Card padded={false}>
-      <div onClick={() => setCollapsed(!collapsed)} style={{
-        padding: "10px 20px", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "space-between",
-        borderBottom: collapsed ? "none" : "1px solid var(--sim-hairline)",
-      }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <span style={{ fontSize: 13, fontWeight: 600 }}>分析日志</span>
-          {isActive && <PulseDot color="var(--sim-up)" />}
-          {isActive && <span style={{ fontSize: 12, color: "var(--sim-up)" }}>运行中</span>}
-          {sse.status === "completed" && <Tag kind="down" size="sm">完成</Tag>}
-          {sse.status === "error" && <Tag kind="up" size="sm">失败</Tag>}
-        </div>
-        <span style={{ fontSize: 12, color: "var(--sim-text-mute)" }}>{collapsed ? "展开" : "收起"}</span>
-      </div>
-      {!collapsed && (
-        <div style={{ maxHeight: 240, overflow: "auto", padding: "8px 20px", fontFamily: "var(--sim-mono)", fontSize: 11.5, lineHeight: 1.6 }}>
-          {sse.logs.map((log, i) => (
-            <div key={i} style={{ color: "var(--sim-text-soft)", padding: "2px 0" }}>{log.message}</div>
-          ))}
-          {sse.errorMessage && <div style={{ color: "var(--sim-down)", padding: "2px 0" }}>{sse.errorMessage}</div>}
-          <div ref={endRef} />
-        </div>
-      )}
-    </Card>
   );
 }
 

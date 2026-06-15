@@ -15,7 +15,7 @@ function source(name: string, type: SourceReference["type"], note: string): Sour
 export class MockAshareDataSource implements StockDataSource {
   readonly name = "mock-a-share-data";
 
-  async loadStockDataset(ticker: string): Promise<RawStockDataset> {
+  async loadStockDataset(ticker: string, _signal?: AbortSignal): Promise<RawStockDataset> {
     const normalizedTicker = ticker.trim().toUpperCase();
     const marketSource = source("AKShare", "market_data", "Mocked MVP market data shaped after AKShare coverage.");
     const financialSource = source("Tushare Pro", "financials", "Mocked financial metrics shaped after Tushare fields.");

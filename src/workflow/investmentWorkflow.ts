@@ -15,6 +15,15 @@ import { digestKnowledgeBase } from "../knowledge/knowledgeBase.js";
 import type { LlmProvider } from "../llm/llmProvider.js";
 import type { InstitutionSurvey } from "../domain/types.js";
 import { PromptBuilder } from "../prompts/promptBuilder.js";
+import {
+  STAGE_ORDER,
+  applyStageResult,
+  stageIndex,
+  WorkflowAbortError,
+  type StageEmitter,
+  type StageId,
+  type WorkflowContext,
+} from "./stageEvents.js";
 
 const MAX_SURVEY_SESSIONS = 8;
 
@@ -96,6 +105,9 @@ export class InvestmentWorkflow {
   private readonly onProgress: ProgressCallback | undefined;
   private readonly knowledgeBaseDir: string | undefined;
   private readonly preloadedInsights: KnowledgeInsight[] | undefined;
+  /** 当前 runStaged 运行期间的事件发射器与取消信号（每次运行单实例，故可作实例态）。 */
+  private emit: StageEmitter | undefined;
+  private signal: AbortSignal | undefined;
 
   constructor(
     private readonly dataSource: StockDataSource,
@@ -109,38 +121,147 @@ export class InvestmentWorkflow {
     this.preloadedInsights = preloadedInsights;
   }
 
+  /** 兼容旧调用方：用结构化执行器跑完整流程，并把事件桥接回旧的 onProgress 回调。 */
   async run(ticker: string): Promise<WorkflowResult> {
-    const [dataset, allInsights] = await Promise.all([
-      this.dataSource.loadStockDataset(ticker),
-      this.loadKnowledge(),
-    ]);
-    this.onProgress?.("data_loaded", { ticker, dataAsOf: dataset.quote.dataAsOf, rawDataset: dataset });
+    const emit: StageEmitter = (ev) => {
+      if (ev.kind === "stage_done") this.onProgress?.(ev.stage, ev.payload);
+      else if (ev.kind === "substep") this.onProgress?.("knowledge_progress", ev.text);
+    };
+    return this.runStaged({ ticker, emit });
+  }
 
-    let knowledgeInsights = allInsights;
-    if (allInsights.length > 0) {
-      knowledgeInsights = await this.filterRelevantInsights(dataset, allInsights);
-      this.onProgress?.("knowledge_loaded", { total: allInsights.length, relevant: knowledgeInsights.length, count: knowledgeInsights.length });
+  /**
+   * 阶段表驱动的执行器：逐阶段发出结构化事件，支持外部取消与从中间阶段续跑。
+   * resumeCtx 提供已完成阶段的结果，fromStage 指定从哪个阶段开始（默认从头）。
+   */
+  async runStaged(opts: {
+    ticker: string;
+    emit: StageEmitter;
+    signal?: AbortSignal;
+    resumeCtx?: WorkflowContext;
+    fromStage?: StageId;
+  }): Promise<WorkflowResult> {
+    const { ticker, emit, signal, resumeCtx, fromStage } = opts;
+    this.emit = emit;
+    this.signal = signal;
+    const ctx: WorkflowContext = { ...(resumeCtx ?? {}) };
+    const startIdx = fromStage ? stageIndex(fromStage) : 0;
+
+    try {
+      for (let i = startIdx; i < STAGE_ORDER.length; i++) {
+        const stage = STAGE_ORDER[i]!;
+        this.throwIfAborted();
+        emit({ kind: "stage_start", stage, index: i, at: new Date().toISOString() });
+        const t0 = Date.now();
+        try {
+          const { summary, payload, skipped } = await this.executeStage(stage, ticker, ctx);
+          if (payload !== undefined) applyStageResult(ctx, stage, payload);
+          emit({ kind: "stage_done", stage, index: i, summary, durationMs: Date.now() - t0, skipped, payload, at: new Date().toISOString() });
+        } catch (err) {
+          const aborted = this.signal?.aborted;
+          const message = aborted ? "分析已取消" : err instanceof Error ? err.message : String(err);
+          emit({ kind: "stage_failed", stage, index: i, error: message, durationMs: Date.now() - t0, at: new Date().toISOString() });
+          if (aborted) throw new WorkflowAbortError(message);
+          throw err;
+        }
+      }
+    } finally {
+      this.emit = undefined;
+      this.signal = undefined;
     }
 
-    const analysis = await this.analyzeStock(dataset, knowledgeInsights);
-    this.onProgress?.("analysis_complete", analysis);
+    return {
+      knowledgeInsights: ctx.knowledgeInsights ?? [],
+      analysis: ctx.analysis!,
+      sentiment: ctx.sentiment!,
+      report: ctx.report!,
+      bullCase: ctx.bullCase!,
+      bearCase: ctx.bearCase!,
+      decision: ctx.decision!,
+    };
+  }
 
-    const sentiment = await this.analyzeSentiment(dataset);
-    this.onProgress?.("sentiment_complete", sentiment);
+  private async executeStage(
+    stage: StageId,
+    ticker: string,
+    ctx: WorkflowContext,
+  ): Promise<{ summary: string; payload?: unknown; skipped?: boolean }> {
+    switch (stage) {
+      case "data_loaded": {
+        const dataset = await this.dataSource.loadStockDataset(ticker, this.signal);
+        if (dataset.dataGaps && dataset.dataGaps.length > 0) {
+          this.emitSubstep(stage, `数据盲区：${dataset.dataGaps.slice(0, 3).join("、")}`);
+        }
+        return {
+          payload: dataset,
+          summary: `已加载 ${dataset.quote.name}（${dataset.quote.ticker}）行情/财务/技术面/资金流/舆情，截至 ${dataset.quote.dataAsOf}`,
+        };
+      }
+      case "knowledge_loaded": {
+        const all = await this.loadKnowledge();
+        if (all.length === 0) {
+          return { payload: [], skipped: true, summary: "未配置相关知识库文档，跳过" };
+        }
+        const relevant = await this.filterRelevantInsights(ctx.dataset!, all);
+        return { payload: relevant, summary: `知识库 ${all.length} 篇中 ${relevant.length} 篇相关` };
+      }
+      case "analysis_complete": {
+        const analysis = await this.analyzeStock(ctx.dataset!, ctx.knowledgeInsights ?? []);
+        return {
+          payload: analysis,
+          summary: analysis.companyOverview ? `${analysis.companyOverview.slice(0, 70)}…` : "基本面分析完成",
+        };
+      }
+      case "sentiment_complete": {
+        const sentiment = await this.analyzeSentiment(ctx.dataset!);
+        return {
+          payload: sentiment,
+          summary: `情绪分数 ${sentiment.sentimentScore} · ${(sentiment.summary ?? "").slice(0, 40)}…`,
+        };
+      }
+      case "report_complete": {
+        const report = await this.generateReport(ctx.dataset!, ctx.analysis!, ctx.sentiment!, ctx.knowledgeInsights ?? []);
+        return {
+          payload: report,
+          summary: report.investmentSummary ? `${report.investmentSummary.slice(0, 70)}…` : "研报生成完成",
+        };
+      }
+      case "debate_complete": {
+        const [bullCase, bearCase] = await Promise.all([
+          this.debateBull(ctx.dataset!, ctx.analysis!, ctx.sentiment!, ctx.report!, ctx.knowledgeInsights ?? [])
+            .then((c) => { this.emitDebateArgs("bull", c); return c; }),
+          this.debateBear(ctx.dataset!, ctx.analysis!, ctx.sentiment!, ctx.report!, ctx.knowledgeInsights ?? [])
+            .then((c) => { this.emitDebateArgs("bear", c); return c; }),
+        ]);
+        return {
+          payload: { bullCase, bearCase },
+          summary: `多方置信 ${bullCase.conviction} · 空方置信 ${bearCase.conviction}`,
+        };
+      }
+      case "decision_complete": {
+        const decision = await this.makeDecision(
+          ctx.dataset!, ctx.analysis!, ctx.sentiment!, ctx.report!, ctx.bullCase!, ctx.bearCase!, ctx.knowledgeInsights ?? [],
+        );
+        return {
+          payload: decision,
+          summary: `${decision.action.toUpperCase()} · 目标价 ${decision.targetPrice} · 置信 ${decision.confidence}`,
+        };
+      }
+    }
+  }
 
-    const report = await this.generateReport(dataset, analysis, sentiment, knowledgeInsights);
-    this.onProgress?.("report_complete", report);
+  private emitSubstep(stage: StageId, text: string, side?: "bull" | "bear"): void {
+    this.emit?.({ kind: "substep", stage, text, side, at: new Date().toISOString() });
+  }
 
-    const [bullCase, bearCase] = await Promise.all([
-      this.debateBull(dataset, analysis, sentiment, report, knowledgeInsights),
-      this.debateBear(dataset, analysis, sentiment, report, knowledgeInsights),
-    ]);
-    this.onProgress?.("debate_complete", { bullCase, bearCase });
+  private emitDebateArgs(side: "bull" | "bear", c: DebateCase): void {
+    for (const arg of c.coreArguments.slice(0, 3)) {
+      this.emitSubstep("debate_complete", arg, side);
+    }
+  }
 
-    const decision = await this.makeDecision(dataset, analysis, sentiment, report, bullCase, bearCase, knowledgeInsights);
-    this.onProgress?.("decision_complete", decision);
-
-    return { knowledgeInsights, analysis, sentiment, report, bullCase, bearCase, decision };
+  private throwIfAborted(): void {
+    if (this.signal?.aborted) throw new WorkflowAbortError();
   }
 
   private async loadKnowledge(): Promise<KnowledgeInsight[]> {
@@ -150,7 +271,7 @@ export class InvestmentWorkflow {
       return await digestKnowledgeBase(
         this.knowledgeBaseDir,
         this.llm,
-        (msg) => this.onProgress?.("knowledge_progress", msg),
+        (msg) => this.emitSubstep("knowledge_loaded", msg),
       );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -160,8 +281,8 @@ export class InvestmentWorkflow {
   }
 
   private async filterRelevantInsights(dataset: RawStockDataset, insights: KnowledgeInsight[]): Promise<KnowledgeInsight[]> {
-    if (insights.length <= 1) return insights;
-    this.onProgress?.("knowledge_progress", `正在筛选与 ${dataset.quote.name} 相关的知识库文档 (${insights.length} 篇)...`);
+    if (insights.length === 0) return insights;
+    this.emitSubstep("knowledge_loaded", `正在筛选与 ${dataset.quote.name} 相关的知识库文档 (${insights.length} 篇)...`);
 
     const candidates = insights.map((ins, idx) => ({
       idx,
@@ -197,13 +318,14 @@ export class InvestmentWorkflow {
 
     try {
       const result = await this.llm.generateStructured<{ relevant: number[] }>(
-        { task: "knowledge_relevance_filter", systemPrompt, userPrompt },
+        { task: "knowledge_relevance_filter", systemPrompt, userPrompt, signal: this.signal },
         fallback,
       );
       const indices = new Set(result.relevant);
       const filtered = insights.filter((_, i) => indices.has(i));
-      this.onProgress?.("knowledge_progress", `筛选完成: ${insights.length} 篇中 ${filtered.length} 篇相关`);
-      return filtered.length > 0 ? filtered : insights;
+      this.emitSubstep("knowledge_loaded", `筛选完成: ${insights.length} 篇中 ${filtered.length} 篇相关`);
+      // 尊重模型的相关性判断：判定全部不相关就返回空，不再"保险起见"把不相关文档塞回去
+      return filtered;
     } catch (err) {
       console.error(`[warn] 知识库相关性筛选失败，使用全部文档: ${err instanceof Error ? err.message : String(err)}`);
       return insights;
@@ -241,7 +363,7 @@ export class InvestmentWorkflow {
 
     const promptData = trimForPrompt(dataset);
     const prompt = this.prompts.stockAnalysis({ ...promptData, knowledgeInsights }, fallback);
-    return this.llm.generateStructured({ task: "stock_analysis", ...prompt }, fallback);
+    return this.llm.generateStructured({ task: "stock_analysis", ...prompt, signal: this.signal }, fallback);
   }
 
   private async analyzeSentiment(dataset: RawStockDataset): Promise<SentimentReport> {
@@ -294,7 +416,7 @@ export class InvestmentWorkflow {
       holderTrades: dataset.holderTrades,
     };
     const prompt = this.prompts.sentiment(sentimentInput, fallback);
-    return this.llm.generateStructured({ task: "sentiment", ...prompt }, fallback);
+    return this.llm.generateStructured({ task: "sentiment", ...prompt, signal: this.signal }, fallback);
   }
 
   private async generateReport(
@@ -336,7 +458,7 @@ export class InvestmentWorkflow {
 
     const promptData = trimForPrompt(dataset);
     const prompt = this.prompts.report({ dataset: promptData, analysis, sentiment, knowledgeInsights }, fallback);
-    return this.llm.generateStructured({ task: "research_report", ...prompt }, fallback);
+    return this.llm.generateStructured({ task: "research_report", ...prompt, signal: this.signal }, fallback);
   }
 
   private async debateBull(
@@ -372,7 +494,7 @@ export class InvestmentWorkflow {
 
     const promptData = trimForPrompt(dataset);
     const prompt = this.prompts.bull({ dataset: promptData, analysis, sentiment, report, knowledgeInsights }, fallback);
-    return this.llm.generateStructured({ task: "bull_debate", ...prompt }, fallback);
+    return this.llm.generateStructured({ task: "bull_debate", ...prompt, signal: this.signal }, fallback);
   }
 
   private async debateBear(
@@ -413,7 +535,7 @@ export class InvestmentWorkflow {
 
     const promptData = trimForPrompt(dataset);
     const prompt = this.prompts.bear({ dataset: promptData, analysis, sentiment, report, knowledgeInsights }, fallback);
-    return this.llm.generateStructured({ task: "bear_debate", ...prompt }, fallback);
+    return this.llm.generateStructured({ task: "bear_debate", ...prompt, signal: this.signal }, fallback);
   }
 
   private async makeDecision(
@@ -468,6 +590,6 @@ export class InvestmentWorkflow {
 
     const promptData = trimForPrompt(dataset);
     const prompt = this.prompts.decision({ dataset: promptData, analysis, sentiment, report, bullCase, bearCase, knowledgeInsights }, fallback);
-    return this.llm.generateStructured({ task: "decision", ...prompt }, fallback);
+    return this.llm.generateStructured({ task: "decision", ...prompt, signal: this.signal }, fallback);
   }
 }

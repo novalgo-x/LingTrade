@@ -31,6 +31,20 @@ export function initSchema(db: Database.Database): void {
       created_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS analysis_stage_results (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      task_id INTEGER NOT NULL REFERENCES analysis_tasks(id),
+      stage TEXT NOT NULL,
+      stage_index INTEGER NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('running','done','failed','skipped')),
+      summary TEXT,
+      result_json TEXT,
+      duration_ms INTEGER,
+      started_at TEXT,
+      ended_at TEXT,
+      UNIQUE(task_id, stage)
+    );
+
     CREATE TABLE IF NOT EXISTS sim_config (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL,

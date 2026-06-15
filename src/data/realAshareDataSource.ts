@@ -178,6 +178,7 @@ export class RealAshareDataSource implements StockDataSource {
   private dataGaps: Array<{ api: string; label: string; reason: string }> = [];
   private tushareAttempts = 0;
   private tushareSuccesses = 0;
+  private activeSignal: AbortSignal | undefined;
   // 串行化 Tushare 请求：低积分 token 的调用频次限制很严，并发请求容易集体触发限频
   private requestQueue: Promise<unknown> = Promise.resolve();
 
@@ -194,13 +195,14 @@ export class RealAshareDataSource implements StockDataSource {
     }
   }
 
-  async loadStockDataset(ticker: string): Promise<RawStockDataset> {
+  async loadStockDataset(ticker: string, signal?: AbortSignal): Promise<RawStockDataset> {
     const tsCode = normalizeAshareTicker(ticker);
     const retrievedAt = nowIso();
     const today = formatDate(new Date());
     this.dataGaps = [];
     this.tushareAttempts = 0;
     this.tushareSuccesses = 0;
+    this.activeSignal = signal;
 
     const stockBasic = await this.fetchTushareFirstSafe(
       "stock_basic",
@@ -397,6 +399,12 @@ export class RealAshareDataSource implements StockDataSource {
   private async fetchJson(url: string, body: unknown): Promise<unknown> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.config.requestTimeoutMs);
+    const ext = this.activeSignal;
+    const onExternalAbort = (): void => controller.abort();
+    if (ext) {
+      if (ext.aborted) controller.abort();
+      else ext.addEventListener("abort", onExternalAbort, { once: true });
+    }
     try {
       const init =
         body === undefined
@@ -414,6 +422,7 @@ export class RealAshareDataSource implements StockDataSource {
       return response.json();
     } finally {
       clearTimeout(timeout);
+      ext?.removeEventListener("abort", onExternalAbort);
     }
   }
 

@@ -13,6 +13,7 @@ import { RealAshareDataSource } from "./data/realAshareDataSource.js";
 import { MockLlmProvider } from "./llm/mockLlmProvider.js";
 import { OpenAiCompatibleProvider } from "./llm/openAiCompatibleProvider.js";
 import { InvestmentWorkflow } from "./workflow/investmentWorkflow.js";
+import type { StageEmitter } from "./workflow/stageEvents.js";
 import { join, resolve } from "path";
 import { pathToFileURL } from "node:url";
 import type { KnowledgeInsight } from "./domain/types.js";
@@ -72,58 +73,27 @@ export async function main(args: string[] = process.argv.slice(2)): Promise<void
   const noKb = args.includes("--no-kb");
   const kbInsights = noKb ? [] : await loadKbInsightsFromDb();
 
-  const onProgress = (step: string, result: unknown): void => {
-    const timestamp = new Date().toISOString();
-    console.error(`\n[${timestamp}] ✓ ${step}`);
-    if (step === "data_loaded") {
-      const data = result as { ticker: string; dataAsOf: string; rawDataset?: unknown };
-      console.error(`  → 数据已加载: ${data.ticker} (${data.dataAsOf})`);
-      
-      if (verbose && data.rawDataset) {
+  const emit: StageEmitter = (ev): void => {
+    const ts = new Date().toISOString();
+    if (ev.kind === "stage_start") {
+      console.error(`\n[${ts}] ▶ ${ev.stage}`);
+    } else if (ev.kind === "substep") {
+      const tag = ev.side ? `[${ev.side}] ` : "";
+      console.error(`   - ${tag}${ev.text}`);
+    } else if (ev.kind === "stage_done") {
+      console.error(`[${ts}] ✓ ${ev.stage} (${(ev.durationMs / 1000).toFixed(1)}s)${ev.skipped ? " [skipped]" : ""}`);
+      if (ev.summary) console.error(`     ${ev.summary}`);
+      if (verbose && ev.stage === "data_loaded") {
         console.error("\n📦 原始数据集:");
-        console.error(JSON.stringify(data.rawDataset, null, 2));
+        console.error(JSON.stringify(ev.payload, null, 2));
       }
-    } else if (step === "analysis_complete") {
-      const analysis = result as { ticker: string; companyOverview?: string };
-      console.error(`  → 股票分析完成`);
-      if (analysis.companyOverview) {
-        console.error(`     ${analysis.companyOverview.slice(0, 80)}...`);
-      }
-    } else if (step === "sentiment_complete") {
-      const sentiment = result as { sentimentScore?: number; summary?: string };
-      console.error(`  → 市场情绪分析完成`);
-      if (sentiment.sentimentScore !== undefined && sentiment.summary) {
-        console.error(`     情绪分数: ${sentiment.sentimentScore}, ${sentiment.summary.slice(0, 60)}...`);
-      }
-    } else if (step === "report_complete") {
-      const report = result as { investmentSummary?: string };
-      console.error(`  → 研报生成完成`);
-      if (report.investmentSummary) {
-        console.error(`     ${report.investmentSummary.slice(0, 80)}...`);
-      }
-    } else if (step === "knowledge_loaded") {
-      const kb = result as { count: number; total?: number; relevant?: number };
-      if (kb.total != null && kb.relevant != null) {
-        console.error(`  → 知识库: ${kb.total} 篇文档中 ${kb.relevant} 篇相关`);
-      } else {
-        console.error(`  → 知识库已加载: ${kb.count} 篇文档`);
-      }
-    } else if (step === "knowledge_progress") {
-      console.error(`  → ${String(result)}`);
-    } else if (step === "debate_complete") {
-      const debate = result as { bullCase: { conviction: number }; bearCase: { conviction: number } };
-      console.error(`  → 多空辩论完成: 多方置信 ${debate.bullCase.conviction}, 空方置信 ${debate.bearCase.conviction}`);
-    } else if (step === "decision_complete") {
-      const decision = result as { action?: string; confidence?: number; targetPrice?: number };
-      console.error(`  → 决策建议完成`);
-      if (decision.action && decision.confidence !== undefined && decision.targetPrice !== undefined) {
-        console.error(`     操作: ${decision.action.toUpperCase()}, 信心度: ${decision.confidence}, 目标价: ${decision.targetPrice}`);
-      }
+    } else if (ev.kind === "stage_failed") {
+      console.error(`[${ts}] ✗ ${ev.stage}: ${ev.error}`);
     }
   };
-  
-  const workflow = new InvestmentWorkflow(dataSource, llm, onProgress, undefined, kbInsights);
-  const result = await workflow.run(ticker);
+
+  const workflow = new InvestmentWorkflow(dataSource, llm, undefined, undefined, kbInsights);
+  const result = await workflow.runStaged({ ticker, emit });
   
   if (saveRawData) {
     const fs = await import("fs/promises");

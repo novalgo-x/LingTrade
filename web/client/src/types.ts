@@ -138,3 +138,33 @@ export interface ReportFull {
   result_json: WorkflowResult;
   created_at: string;
 }
+
+export type StageId =
+  | "data_loaded"
+  | "knowledge_loaded"
+  | "analysis_complete"
+  | "sentiment_complete"
+  | "report_complete"
+  | "debate_complete"
+  | "decision_complete";
+
+export type StageStatus = "running" | "done" | "failed" | "skipped";
+
+export interface StageRow {
+  id: number;
+  task_id: number;
+  stage: StageId;
+  stage_index: number;
+  status: StageStatus;
+  summary: string | null;
+  result_json: string | null;
+  duration_ms: number | null;
+  started_at: string | null;
+  ended_at: string | null;
+}
+
+export type StageEvent =
+  | { kind: "stage_start"; stage: StageId; index: number; at: string }
+  | { kind: "substep"; stage: StageId; text: string; side?: "bull" | "bear"; at: string }
+  | { kind: "stage_done"; stage: StageId; index: number; summary: string; durationMs: number; skipped?: boolean; at: string }
+  | { kind: "stage_failed"; stage: StageId; index: number; error: string; durationMs: number; at: string };

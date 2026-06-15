@@ -42,35 +42,13 @@ import { start as startScheduler, startReportScheduler } from "./sim/scheduler.j
 import { getOrCreateAccount } from "./sim/accountService.js";
 import { recordDailyNav } from "./sim/performanceService.js";
 import { resetStuckKbFiles, cleanupExpiredKbFiles, startKbCleanupTimer } from "./services/kbService.js";
-import { getAllConfig } from "./sim/configService.js";
+import { syncRuntimeConfigFromDb } from "./services/runtimeConfig.js";
 
 const db = getDb();
 initSchema(db);
 
-// config 数据库中的 tushare 配置优先于 .env，同步到 process.env 供 CLI 子进程使用
-const savedCfg = getAllConfig();
-if (savedCfg["tushare.token"]) process.env.TUSHARE_TOKEN = String(savedCfg["tushare.token"]);
-if (savedCfg["tushare.baseUrl"]) process.env.TUSHARE_BASE_URL = String(savedCfg["tushare.baseUrl"]);
-
-const LLM_PROVIDERS_LIST = ["anthropic", "openai", "google", "deepseek", "qwen", "zhipu", "moonshot", "minimax", "baichuan", "custom"];
-const researchProvider = savedCfg["agent.research.provider"] as string | undefined;
-const researchModel = savedCfg["agent.research.model"] as string | undefined;
-const activeLlm = researchProvider || LLM_PROVIDERS_LIST.find(p => savedCfg[`llm.${p}.enabled`] && savedCfg[`llm.${p}.key`]);
-if (activeLlm) {
-  const llmKey = savedCfg[`llm.${activeLlm}.key`];
-  const llmUrl = savedCfg[`llm.${activeLlm}.baseUrl`];
-  if (llmKey) {
-    process.env.LLM_API_KEY = String(llmKey);
-    process.env.COPILOT_LLM_MODE = "live";
-  }
-  if (llmUrl) process.env.LLM_BASE_URL = String(llmUrl).replace(/\/+$/, "").replace(/\/v\d+$/, "");
-} else if (process.env.LLM_API_KEY) {
-  process.env.COPILOT_LLM_MODE = "live";
-}
-if (researchModel) process.env.LLM_MODEL = String(researchModel);
-if (savedCfg["tushare.token"] || process.env.TUSHARE_TOKEN) {
-  process.env.COPILOT_DATA_MODE = "real";
-}
+// 把数据库中保存的 LLM / Tushare 配置同步进 process.env（每次分析前也会再同步一次，改设置无需重启）
+syncRuntimeConfigFromDb();
 
 cleanupStaleTasks();
 resetStuckKbFiles();

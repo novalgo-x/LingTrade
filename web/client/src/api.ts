@@ -1,4 +1,4 @@
-import type { Stock, ReportSummary, ReportFull, AnalysisTask } from "./types.js";
+import type { Stock, ReportSummary, ReportFull, AnalysisTask, StageRow } from "./types.js";
 
 const BASE = "/api";
 
@@ -47,6 +47,24 @@ export const api = {
 
   getRunningTask: (stockId: number) =>
     request<{ taskId: number | null; startedAt?: string }>(`/stocks/${stockId}/running-task`),
+
+  getLatestTask: (stockId: number) =>
+    request<{ taskId: number | null; status?: string }>(`/stocks/${stockId}/latest-task`),
+
+  getActiveTasks: () =>
+    request<Array<{ taskId: number; stockId: number }>>("/tasks/active"),
+
+  getLatestTasks: () =>
+    request<Array<{ taskId: number; stockId: number; status: string; completedAt: string | null }>>("/tasks/latest"),
+
+  getTaskStages: (taskId: number) =>
+    request<StageRow[]>(`/tasks/${taskId}/stages`),
+
+  retryTask: (taskId: number) =>
+    request<{ taskId: number; retried: boolean }>(`/tasks/${taskId}/retry`, { method: "POST" }),
+
+  cancelTask: (taskId: number) =>
+    request<{ cancelled: boolean }>(`/tasks/${taskId}/cancel`, { method: "POST" }),
 
   listReports: (stockId: number) =>
     request<ReportSummary[]>(`/stocks/${stockId}/reports`),

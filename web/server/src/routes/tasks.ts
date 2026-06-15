@@ -1,6 +1,6 @@
 import { Router, type Request, type Response } from "express";
 import { getStock } from "../services/stockService.js";
-import { startAnalysis, getTask, getRunningTask, subscribeToLogs, startBatchAnalysis, getBatchStatus, cancelBatch } from "../services/analyzerService.js";
+import { startAnalysis, retryTask, cancelTask, getTask, getTaskStages, getRunningTask, getLatestTask, getActiveTasks, getLatestTasksForAllStocks, subscribeToLogs, startBatchAnalysis, getBatchStatus, cancelBatch } from "../services/analyzerService.js";
 
 export const tasksRouter = Router();
 
@@ -31,6 +31,18 @@ tasksRouter.get("/stocks/:id/running-task", (req: Request, res: Response) => {
   }
 });
 
+tasksRouter.get("/stocks/:id/latest-task", (req: Request, res: Response) => {
+  res.json(getLatestTask(Number(req.params.id)));
+});
+
+tasksRouter.get("/tasks/active", (_req: Request, res: Response) => {
+  res.json(getActiveTasks());
+});
+
+tasksRouter.get("/tasks/latest", (_req: Request, res: Response) => {
+  res.json(getLatestTasksForAllStocks());
+});
+
 tasksRouter.get("/tasks/:id", (req: Request, res: Response) => {
   const taskId = Number(req.params.id);
   const task = getTask(taskId);
@@ -49,6 +61,33 @@ tasksRouter.get("/tasks/:id/logs", (req: Request, res: Response) => {
     return;
   }
   subscribeToLogs(taskId, res);
+});
+
+tasksRouter.get("/tasks/:id/stages", (req: Request, res: Response) => {
+  const taskId = Number(req.params.id);
+  const task = getTask(taskId);
+  if (!task) {
+    res.status(404).json({ error: "Task not found" });
+    return;
+  }
+  res.json(getTaskStages(taskId));
+});
+
+tasksRouter.post("/tasks/:id/retry", (req: Request, res: Response) => {
+  const taskId = Number(req.params.id);
+  const result = retryTask(taskId);
+  if (!result.ok) {
+    const notFound = result.error === "Task not found" || result.error === "Stock not found";
+    res.status(notFound ? 404 : 409).json({ error: result.error });
+    return;
+  }
+  res.json({ taskId, retried: true });
+});
+
+tasksRouter.post("/tasks/:id/cancel", (req: Request, res: Response) => {
+  const taskId = Number(req.params.id);
+  const result = cancelTask(taskId);
+  res.json({ cancelled: result.ok });
 });
 
 tasksRouter.post("/batch-analyze", (_req: Request, res: Response) => {

@@ -12,6 +12,33 @@ export const KB_DIR = path.resolve(__dirname, "..", "..", "..", "data", "knowled
 
 mkdirSync(KB_DIR, { recursive: true });
 
+/** 读取所有已就绪的知识库文档摘要，供投研流水线注入。 */
+export function loadReadyInsights(): KnowledgeInsight[] {
+  const db = getDb();
+  const rows = db
+    .prepare("SELECT insight_json FROM kb_files WHERE status = 'ready' AND insight_json IS NOT NULL")
+    .all() as Array<{ insight_json: string }>;
+  const insights: KnowledgeInsight[] = [];
+  for (const row of rows) {
+    try {
+      const raw = JSON.parse(row.insight_json) as Partial<KnowledgeInsight>;
+      insights.push({
+        author: raw.author ?? "未知",
+        title: raw.title ?? "未命名文档",
+        publishDate: raw.publishDate ?? "",
+        marketOutlook: raw.marketOutlook ?? "",
+        sectorViews: Array.isArray(raw.sectorViews) ? raw.sectorViews : [],
+        stockMentions: Array.isArray(raw.stockMentions) ? raw.stockMentions : [],
+        keyPoints: Array.isArray(raw.keyPoints) ? raw.keyPoints : [],
+        riskFactors: Array.isArray(raw.riskFactors) ? raw.riskFactors : [],
+        investmentThemes: Array.isArray(raw.investmentThemes) ? raw.investmentThemes : [],
+        summary: raw.summary ?? "",
+      });
+    } catch { /* 跳过无法解析的记录 */ }
+  }
+  return insights;
+}
+
 // ── LLM helper ──
 
 interface ChatCompletionResponse {

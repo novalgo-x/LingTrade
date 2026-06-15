@@ -61,6 +61,11 @@ export class OpenAiCompatibleProvider implements LlmProvider {
   async generateStructured<T>(request: LlmRequest, fallback: T): Promise<T> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.config.timeoutMs);
+    const onExternalAbort = (): void => controller.abort();
+    if (request.signal) {
+      if (request.signal.aborted) controller.abort();
+      else request.signal.addEventListener("abort", onExternalAbort, { once: true });
+    }
     const messages: ChatMessage[] = [
       { role: "system", content: request.systemPrompt },
       { role: "user", content: request.userPrompt },
@@ -117,6 +122,7 @@ export class OpenAiCompatibleProvider implements LlmProvider {
       throw err;
     } finally {
       clearTimeout(timeout);
+      request.signal?.removeEventListener("abort", onExternalAbort);
     }
   }
 }
