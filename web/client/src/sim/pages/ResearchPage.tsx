@@ -219,10 +219,15 @@ export function ResearchPage({ initialReportId }: { initialReportId?: number } =
     if (!selectedStockId) { setReports([]); return; }
     const stockId = selectedStockId;
     api.listReports(stockId).then(setReports).catch(() => setReports([]));
-    // 恢复最近一次「运行中 / 失败」的生成进度（未被清除、且尚未在跟踪），用于刷新后回看失败原因
+    // 恢复最近一次生成进度（未被清除、且尚未在跟踪）：running 始终恢复（用户可能离开了在跑的生成）；
+    // failed 仅在「最近」时恢复，用于刚失败时回看原因——陈旧失败不该在每次进入个股时复活成一条假横幅
+    // （列表的未读红点已足够提示）。
     api.getLatestTask(stockId).then(r => {
-      if (!r.taskId || (r.status !== "running" && r.status !== "failed")) return;
-      if (dismissedRef.current.has(r.taskId)) return;
+      if (!r.taskId || dismissedRef.current.has(r.taskId)) return;
+      const recentlyFailed =
+        r.status === "failed" && r.completedAt != null &&
+        Date.now() - new Date(r.completedAt).getTime() < 30 * 60 * 1000;
+      if (r.status !== "running" && !recentlyFailed) return;
       setTaskMap(prev => prev.has(stockId) ? prev : new Map(prev).set(stockId, r.taskId!));
     }).catch(() => {});
   }, [selectedStockId]);

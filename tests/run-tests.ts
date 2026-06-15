@@ -48,7 +48,7 @@ const tests: TestCase[] = [
       assertEqual(config.llm.baseUrl, "https://api.deepseek.com/v1", "base URL");
       assertEqual(config.llm.model, "deepseek-chat", "model");
       assertEqual(config.llm.apiKey, undefined, "api key");
-      assertEqual(config.llm.timeoutMs, 120_000, "timeout");
+      assertEqual(config.llm.timeoutMs, 300_000, "timeout");
       assertEqual(config.llm.maxRetries, 3, "max retries");
       assertEqual(config.data.tushareBaseUrl, "http://api.tushare.pro", "Tushare base URL");
       assertEqual(config.data.tushareToken, undefined, "Tushare token");

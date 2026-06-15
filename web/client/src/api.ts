@@ -49,7 +49,7 @@ export const api = {
     request<{ taskId: number | null; startedAt?: string }>(`/stocks/${stockId}/running-task`),
 
   getLatestTask: (stockId: number) =>
-    request<{ taskId: number | null; status?: string }>(`/stocks/${stockId}/latest-task`),
+    request<{ taskId: number | null; status?: string; completedAt?: string | null }>(`/stocks/${stockId}/latest-task`),
 
   getActiveTasks: () =>
     request<Array<{ taskId: number; stockId: number }>>("/tasks/active"),

@@ -47,7 +47,7 @@ export function loadConfig(env: Environment = process.env): AppConfig {
   const llm: LlmConfig = {
     baseUrl: optionalEnv("LLM_BASE_URL", env) ?? "https://api.deepseek.com/v1",
     model: optionalEnv("LLM_MODEL", env) ?? "deepseek-chat",
-    timeoutMs: parsePositiveInteger(env.LLM_TIMEOUT_MS, 120_000),
+    timeoutMs: parsePositiveInteger(env.LLM_TIMEOUT_MS, 300_000),
     maxRetries: parsePositiveInteger(env.LLM_MAX_RETRIES, 3),
   };
   if (apiKey) {

@@ -56,7 +56,7 @@ export function Dashboard({ onNavigate }: { onNavigate: (page: string) => void }
     Promise.all([
       simApi.getAccount().catch(() => null),
       simApi.getPositions().catch(() => [] as SimPosition[]),
-      simApi.getDecisions({ limit: 50, date: todayUtc8 }).catch(() => ({ data: [] as SimDecision[] })),
+      simApi.getDecisions({ limit: 500, date: todayUtc8 }).catch(() => ({ data: [] as SimDecision[] })),
       simApi.getIndices().catch(() => [] as IndexQuote[]),
       simApi.getLatestReports().catch(() => [] as DashReportSummary[]),
       simApi.getNavHistory().catch(() => [] as { date: string; nav: number }[]),

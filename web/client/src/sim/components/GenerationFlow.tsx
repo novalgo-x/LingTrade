@@ -117,8 +117,8 @@ export function GenProgressBanner({ flow, onOpen, onDismiss }: {
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 7 }}>
           <StageDots flow={flow} />
           <span style={{ fontSize: 11, color: "var(--sim-text-mute)", fontFamily: "var(--sim-mono)" }}>
-            用时 {elapsedLabel}s
-            {flow.phase === "failed" && flow.failedStage && ` · ${stageName(flow.failedStage)}阶段失败`}
+            {elapsedMs > 0 && `用时 ${elapsedLabel}s`}
+            {flow.phase === "failed" && flow.failedStage && `${elapsedMs > 0 ? " · " : ""}${stageName(flow.failedStage)}阶段失败`}
           </span>
         </div>
       </div>
@@ -236,7 +236,7 @@ export function GenerationFlow({ stock, flow, onBack, onCancel, onRetry, onOpenR
               <span style={{ fontFamily: "var(--sim-mono)", fontSize: 12, color: "var(--sim-text-mute)" }}>{stock.exchange}.{stock.ticker}</span>
             </div>
             <div style={{ fontSize: 11.5, color: "var(--sim-text-mute)", marginTop: 3, fontFamily: "var(--sim-mono)" }}>
-              {doneCount}/{GEN_STAGES.length} 阶段完成 · 用时 {elapsedLabel}s
+              {doneCount}/{GEN_STAGES.length} 阶段完成{elapsedMs > 0 ? ` · 用时 ${elapsedLabel}s` : ""}
             </div>
           </div>
           {phase === "running" && <Btn kind="ghost" size="sm" onClick={onCancel}>取消生成</Btn>}

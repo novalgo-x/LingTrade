@@ -50,6 +50,26 @@ export function cleanupStaleTasks(): void {
   }
 }
 
+/**
+ * 判定并修复「僵尸任务」：DB 标记 running，但本进程的 activeRuns 里没有它的运行句柄，
+ * 说明拥有它的运行已不存在（进程被杀、热重载、异常退出而未经历下次启动清理）。就地标记为失败，
+ * 否则前端会一直把它显示成「生成中」、秒表冻结在最后一个完成阶段（如「1/7 · 21s」）。
+ * 返回是否做了修复（true = 原本是僵尸）。
+ */
+function reconcileZombieTask(taskId: number): boolean {
+  if (activeRuns.has(taskId)) return false;
+  const db = getDb();
+  const now = new Date().toISOString();
+  const res = db
+    .prepare(
+      "UPDATE analysis_tasks SET status = 'failed', error_message = COALESCE(error_message, '生成意外中断'), completed_at = ? WHERE id = ? AND status = 'running'",
+    )
+    .run(now, taskId);
+  if (res.changes === 0) return false;
+  db.prepare("UPDATE analysis_stage_results SET status = 'failed', ended_at = ? WHERE task_id = ? AND status = 'running'").run(now, taskId);
+  return true;
+}
+
 export function getTask(taskId: number): TaskRow | undefined {
   const db = getDb();
   return db.prepare("SELECT * FROM analysis_tasks WHERE id = ?").get(taskId) as TaskRow | undefined;
@@ -82,16 +102,22 @@ export function getActiveTasks(): Array<{ taskId: number; stockId: number }> {
   const rows = db
     .prepare("SELECT id, stock_id FROM analysis_tasks WHERE status = 'running'")
     .all() as Array<{ id: number; stock_id: number }>;
-  return rows.map((r) => ({ taskId: r.id, stockId: r.stock_id }));
+  // running 但不在本进程 activeRuns 中的是僵尸，就地判失败并剔除，避免列表/详情把早已停止的任务一直显示成「生成中」
+  return rows.filter((r) => !reconcileZombieTask(r.id)).map((r) => ({ taskId: r.id, stockId: r.stock_id }));
 }
 
-/** 该股最近一个任务（任意状态），供前端刷新后恢复运行中/失败的进度入口。 */
-export function getLatestTask(stockId: number): { taskId: number | null; status?: string } {
+/** 该股最近一个任务（任意状态），供前端刷新后恢复运行中/失败的进度入口；completedAt 用于按时效过滤陈旧失败。 */
+export function getLatestTask(stockId: number): { taskId: number | null; status?: string; completedAt?: string | null } {
   const db = getDb();
   const row = db
-    .prepare("SELECT id, status FROM analysis_tasks WHERE stock_id = ? ORDER BY id DESC LIMIT 1")
-    .get(stockId) as { id: number; status: string } | undefined;
-  return row ? { taskId: row.id, status: row.status } : { taskId: null };
+    .prepare("SELECT id, status, completed_at FROM analysis_tasks WHERE stock_id = ? ORDER BY id DESC LIMIT 1")
+    .get(stockId) as { id: number; status: string; completed_at: string | null } | undefined;
+  if (!row) return { taskId: null };
+  // 僵尸 running 任务就地判失败，避免详情页把它显示成永远「生成中」
+  if (row.status === "running" && reconcileZombieTask(row.id)) {
+    return { taskId: row.id, status: "failed", completedAt: new Date().toISOString() };
+  }
+  return { taskId: row.id, status: row.status, completedAt: row.completed_at };
 }
 
 /** 每股最近一个任务的状态（任意状态），供列表「未读 / 失败」标记批量判定。 */
