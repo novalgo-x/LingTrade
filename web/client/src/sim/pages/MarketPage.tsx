@@ -109,12 +109,6 @@ export function MarketPage() {
     }
     setQuotes(qMap);
     writeCache(CACHE_KEY_QUOTES, qMap);
-    const cur = selectedTickerRef.current;
-    if (cur) {
-      simApi.getQuote(cur).then(q => {
-        if (q && selectedTickerRef.current === cur) setDetailQuote(q as unknown as QuoteData);
-      }).catch(() => {});
-    }
   }, [stocks]);
 
   const fetchSparklines = useCallback(async () => {
@@ -135,14 +129,37 @@ export function MarketPage() {
     writeCache(CACHE_KEY_MINUTE, mMap);
   }, [stocks]);
 
+  const fetchPankouTicks = useCallback(() => {
+    const t = selectedTickerRef.current;
+    if (!t) return;
+    simApi.getQuote(t).then(q => {
+      if (q && selectedTickerRef.current === t) setDetailQuote(q as unknown as QuoteData);
+    }).catch(() => {});
+    simApi.getPankou(t).then(pk => {
+      if (selectedTickerRef.current !== t) return;
+      setPankou(pk);
+      const prev = readCache<Record<string, typeof pankou>>(CACHE_KEY_PANKOU) ?? {};
+      prev[t] = pk;
+      writeCache(CACHE_KEY_PANKOU, prev);
+    }).catch(() => { if (selectedTickerRef.current === t) setPankou(null); });
+    simApi.getTicks(t, 30).then(data => {
+      if (selectedTickerRef.current !== t) return;
+      setTicks(data);
+      const prev = readCache<Record<string, typeof ticks>>(CACHE_KEY_TICKS) ?? {};
+      prev[t] = data;
+      writeCache(CACHE_KEY_TICKS, prev);
+    }).catch(() => { if (selectedTickerRef.current === t) setTicks([]); });
+  }, []);
+
   useEffect(() => {
     fetchQuotes();
     fetchSparklines();
     if (!isTrading) return;
     const quoteTimer = setInterval(fetchQuotes, 15_000);
     const sparkTimer = setInterval(fetchSparklines, 120_000);
-    return () => { clearInterval(quoteTimer); clearInterval(sparkTimer); };
-  }, [fetchQuotes, fetchSparklines, isTrading]);
+    const pankouTimer = setInterval(fetchPankouTicks, 6_000);
+    return () => { clearInterval(quoteTimer); clearInterval(sparkTimer); clearInterval(pankouTimer); };
+  }, [fetchQuotes, fetchSparklines, fetchPankouTicks, isTrading]);
 
   useEffect(() => {
     if (!selectedTicker) return;
@@ -162,22 +179,10 @@ export function MarketPage() {
 
     const cachedPankou = readCache<Record<string, typeof pankou>>(CACHE_KEY_PANKOU);
     if (cachedPankou?.[selectedTicker]) setPankou(cachedPankou[selectedTicker]);
-    simApi.getPankou(selectedTicker).then(pk => {
-      setPankou(pk);
-      const prev = readCache<Record<string, typeof pankou>>(CACHE_KEY_PANKOU) ?? {};
-      prev[selectedTicker] = pk;
-      writeCache(CACHE_KEY_PANKOU, prev);
-    }).catch(() => setPankou(null));
-
     const cachedTicks = readCache<Record<string, typeof ticks>>(CACHE_KEY_TICKS);
     if (cachedTicks?.[selectedTicker]) setTicks(cachedTicks[selectedTicker]);
-    simApi.getTicks(selectedTicker, 30).then(data => {
-      setTicks(data);
-      const prev = readCache<Record<string, typeof ticks>>(CACHE_KEY_TICKS) ?? {};
-      prev[selectedTicker] = data;
-      writeCache(CACHE_KEY_TICKS, prev);
-    }).catch(() => setTicks([]));
-  }, [selectedTicker]);
+    fetchPankouTicks();
+  }, [selectedTicker, fetchPankouTicks]);
 
   useEffect(() => {
     if (!selectedTicker) return;
@@ -788,9 +793,48 @@ function OBRow({ side, level, price, volume, maxVol }: {
 }
 
 function TickListCard({ ticks }: { ticks: { timestamp: number; price: number; volume: number; side: "B" | "S" | "N"; percent: number }[] }) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const stickRef = useRef(true);
+  const lastAutoRef = useRef(0);
+  const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [scrolling, setScrolling] = useState(false);
+
+  // 逐笔按时间升序，最新成交在末尾：默认贴底显示最新几笔；用户上翻看历史时保持位置不打断
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (el && stickRef.current) {
+      lastAutoRef.current = Date.now();
+      el.scrollTop = el.scrollHeight;
+    }
+  }, [ticks]);
+
+  useEffect(() => () => { if (hideTimer.current) clearTimeout(hideTimer.current); }, []);
+
+  const handleScroll = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+    if (Date.now() - lastAutoRef.current < 120) return; // 程序自动贴底触发的滚动不显示滚动条
+    setScrolling(true);
+    if (hideTimer.current) clearTimeout(hideTimer.current);
+    hideTimer.current = setTimeout(() => setScrolling(false), 900);
+  };
+
   return (
     <Card title="成交明细" subtitle="逐笔 tick · 实时" padded={false}>
-      <div style={{ maxHeight: 380, overflowY: "auto", padding: "0 4px" }}>
+      <div
+        ref={scrollRef}
+        onScroll={handleScroll}
+        className={"tick-scroll" + (scrolling ? " is-scrolling" : "")}
+        style={{ maxHeight: 380, overflowY: "auto", padding: "0 4px" }}
+      >
+        <style>{`
+          .tick-scroll { scrollbar-width: none; }
+          .tick-scroll::-webkit-scrollbar { width: 6px; }
+          .tick-scroll::-webkit-scrollbar-thumb { background: transparent; border-radius: 3px; transition: background 0.2s; }
+          .tick-scroll.is-scrolling { scrollbar-width: thin; scrollbar-color: var(--sim-border) transparent; }
+          .tick-scroll.is-scrolling::-webkit-scrollbar-thumb { background: var(--sim-border); }
+        `}</style>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
           <thead style={{ position: "sticky", top: 0, background: "var(--sim-surface)" }}>
             <tr style={{ color: "var(--sim-text-mute)" }}>

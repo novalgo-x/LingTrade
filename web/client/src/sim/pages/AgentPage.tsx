@@ -45,7 +45,7 @@ export function AgentPage({ initialDecisionId, onNavigate }: { initialDecisionId
   const refreshDecisions = useCallback(() => {
     const params: Record<string, string> = {};
     if (filter !== "all") params.action = filter;
-    simApi.getDecisions({ limit: 100, ...params }).then(r => {
+    simApi.getDecisions({ limit: 500, ...params }).then(r => {
       setDecisions(r.data);
       if (didInitialSelect.current) return;
       didInitialSelect.current = true;

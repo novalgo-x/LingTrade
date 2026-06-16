@@ -100,17 +100,19 @@ export function executeBuy(
     db.prepare("UPDATE sim_accounts SET cash_balance = cash_balance - ?, updated_at = ? WHERE id = ?")
       .run(totalCost, now, accountId);
 
-    // Upsert position (weighted average cost)
+    // Upsert position. Cost basis includes buy-side fees so it reflects the
+    // cash actually spent (totalCost), mirroring how brokers amortize
+    // commission into the average cost — otherwise P&L would ignore buy fees.
     const existing = db.prepare("SELECT * FROM sim_positions WHERE account_id = ? AND stock_id = ?").get(accountId, stockId) as SimPositionRow | undefined;
     if (existing) {
       const newQty = existing.quantity + quantity;
-      const newAvgCost = (existing.avg_cost * existing.quantity + amount) / newQty;
+      const newAvgCost = (existing.avg_cost * existing.quantity + totalCost) / newQty;
       db.prepare("UPDATE sim_positions SET quantity = ?, avg_cost = ?, updated_at = ? WHERE id = ?")
         .run(newQty, newAvgCost, now, existing.id);
     } else {
       db.prepare(
         "INSERT INTO sim_positions (account_id, stock_id, ticker, quantity, avg_cost, buy_date, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)"
-      ).run(accountId, stockId, ticker, quantity, price, now, now, now);
+      ).run(accountId, stockId, ticker, quantity, totalCost / quantity, now, now, now);
     }
 
     // Insert order

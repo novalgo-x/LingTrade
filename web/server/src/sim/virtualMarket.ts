@@ -197,7 +197,7 @@ export async function getCurrentPrice(ticker: string): Promise<QuoteResult | nul
       dividend_yield: typeof q.dividend_yield === "number" ? q.dividend_yield : null,
       total_shares: typeof q.total_shares === "number" ? q.total_shares : null,
     };
-    cacheSet(key, result, isTradingTime() ? 15_000 : 60_000);
+    cacheSet(key, result, isTradingTime() ? 5_000 : 60_000);
     return result;
   } catch {
     return null;

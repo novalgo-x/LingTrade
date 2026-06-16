@@ -33,6 +33,7 @@ scripts/*.pid
 scripts/seed-demo.ts
 scripts/seed-extra.ts
 scripts/fix-nav-decisions.ts
+scripts/fix-cost-basis.ts
 
 # Original screenshot files (keep semantic-named copies only)
 images/Screenshot*

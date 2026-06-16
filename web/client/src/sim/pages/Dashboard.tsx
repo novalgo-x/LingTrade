@@ -219,7 +219,7 @@ export function Dashboard({ onNavigate }: { onNavigate: (page: string) => void }
 
       {/* Row 3: Today's decisions + Indices + Latest reports */}
       <div style={{ display: "grid", gridTemplateColumns: "1.8fr 1fr 1fr", gap: 16 }}>
-        <Card title="今日决策" subtitle={`${decisions.filter(d => d.status === "executed").length} 笔已执行`}
+        <Card title="今日决策" subtitle={`${decisions.length} 笔决策`}
           action={<Btn size="sm" kind="primary" onClick={() => onNavigate("agent")}>查看决策中心</Btn>}
         >
           <div style={{ marginTop: 4, overflowX: "auto" }}>
@@ -246,7 +246,7 @@ export function Dashboard({ onNavigate }: { onNavigate: (page: string) => void }
                   ))
                 ) : (
                   <>
-                    {decisions.filter(d => d.action !== "hold").slice(0, 6).map(d => (
+                    {decisions.slice(0, 6).map(d => (
                       <tr key={d.id}
                         onClick={() => onNavigate(`agent:${d.id}`)}
                         onMouseEnter={e => (e.currentTarget.style.background = "var(--sim-surface-2)")}
@@ -280,7 +280,7 @@ export function Dashboard({ onNavigate }: { onNavigate: (page: string) => void }
                         </td>
                       </tr>
                     ))}
-                    {decisions.filter(d => d.action !== "hold").length === 0 && (
+                    {decisions.length === 0 && (
                       <tr><td colSpan={7} style={{ ...dtd, textAlign: "center", color: "var(--sim-text-mute)" }}>暂无决策记录</td></tr>
                     )}
                   </>
