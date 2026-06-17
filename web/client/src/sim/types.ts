@@ -133,6 +133,7 @@ export interface SchedulerStatus {
   lastRunError?: string | null;
   nextRunAt: string | null;
   currentCycleId?: string | null;
+  isTradingTime?: boolean;
 }
 
 export interface SimConfig {

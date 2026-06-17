@@ -146,9 +146,11 @@ export function AgentPage({ initialDecisionId, onNavigate }: { initialDecisionId
             <Btn kind={scheduler.running ? "danger" : "primary"} size="sm" onClick={toggleScheduler}>
               {scheduler.running ? "停止调度" : "启动调度"}
             </Btn>
-            <Btn kind="ghost" size="sm" onClick={() => handleRunOnce(false)} disabled={cycleActive}>
-              {cycleActive ? "运行中..." : "执行一次"}
-            </Btn>
+            {scheduler.isTradingTime && (
+              <Btn kind="ghost" size="sm" onClick={() => handleRunOnce(false)} disabled={cycleActive}>
+                {cycleActive ? "运行中..." : "执行一次"}
+              </Btn>
+            )}
             <Btn kind="soft" size="sm" onClick={() => handleRunOnce(true)} disabled={cycleActive}>
               强制执行
             </Btn>

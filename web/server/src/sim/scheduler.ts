@@ -320,5 +320,6 @@ export function getStatus(): SchedulerStatus {
     lastRunError,
     nextRunAt,
     currentCycleId,
+    isTradingTime: isTradingTime(),
   };
 }

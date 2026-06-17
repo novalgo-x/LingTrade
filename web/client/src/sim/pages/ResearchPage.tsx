@@ -91,6 +91,12 @@ function outcomeOf(
   return null;
 }
 
+// 未读/已读状态提升到模块级：切换主导航 tab 会卸载 ResearchPage（SimApp 条件渲染），
+// 若用组件内 useRef 保存，重挂时会重置 → seenInit 再次把现有结果全标已读、未读点消失。
+// 模块级单例可跨卸载/重挂保持，仅在刷新页面时重置。
+const seenOutcomeStore = new Map<number, string>();
+let seenInitDone = false;
+
 export function ResearchPage({ initialReportId }: { initialReportId?: number } = {}) {
   const [stocks, setStocks] = useState<Stock[]>([]);
   const [selectedStockId, setSelectedStockId] = useState<number | null>(null);
@@ -128,8 +134,8 @@ export function ResearchPage({ initialReportId }: { initialReportId?: number } =
   const needsScroll = useRef(!!initialReportId);
   // 列表「未读」标记：记录每只股已读的「最近一次生成结果」标识（成功报告时间戳 / 失败任务号）；
   // 结果比这更新即视为未读，生成完（成功或失败）都会出现小点，点击该股即清除。
-  const seenOutcomeRef = useRef<Map<number, string>>(new Map());
-  const seenInitRef = useRef(false);
+  // 状态存于模块级（seenOutcomeStore / seenInitDone），切到其它 tab 卸载本页后仍保留，避免重挂时未读点丢失。
+  const seenOutcomeRef = useRef(seenOutcomeStore);
   // 始终持有最新 latestReports，供下面「标记已读」effect 读取而无需把它放进依赖
   const latestReportsRef = useRef(latestReports);
   latestReportsRef.current = latestReports;
@@ -157,9 +163,10 @@ export function ResearchPage({ initialReportId }: { initialReportId?: number } =
       latestTaskMap.set(t.stockId, { status: t.status, taskId: t.taskId, completedAt: t.completedAt });
     }
     setLatestTasks(latestTaskMap);
-    // 首次加载时把现有结果（成功报告 / 失败任务）全部标为已读，避免历史结果被误判为未读
-    if (!seenInitRef.current) {
-      seenInitRef.current = true;
+    // 首次加载时把现有结果（成功报告 / 失败任务）全部标为已读，避免历史结果被误判为未读。
+    // seenInitDone 为模块级：仅整个会话首次执行；切 tab 重挂本页不再重复全标已读（否则未读点会被清掉）。
+    if (!seenInitDone) {
+      seenInitDone = true;
       for (const s of list) {
         const oc = outcomeOf(s.id, reportMap, latestTaskMap);
         if (oc) seenOutcomeRef.current.set(s.id, oc.key);
@@ -1514,11 +1521,11 @@ function BatchPanel({ batch, onDismiss }: {
             <div key={i} title={r.error ? `${r.name}: ${r.error}` : r.name} style={{
               padding: "4px 10px", borderRadius: 6, fontSize: 11, fontFamily: "var(--sim-mono)",
               border: "1px solid var(--sim-hairline)",
-              background: r.status === "completed" ? "var(--sim-up-soft)" :
-                          r.status === "failed" ? "var(--sim-down-soft)" :
+              background: r.status === "completed" ? "var(--sim-down-soft)" :
+                          r.status === "failed" ? "var(--sim-up-soft)" :
                           r.status === "running" ? "#FEF3C7" : "var(--sim-surface-2)",
-              color: r.status === "completed" ? "var(--sim-up)" :
-                     r.status === "failed" ? "var(--sim-down)" :
+              color: r.status === "completed" ? "var(--sim-down)" :
+                     r.status === "failed" ? "var(--sim-up)" :
                      r.status === "running" ? "#92400E" : "var(--sim-text-mute)",
               fontWeight: r.status === "running" ? 600 : 400,
             }}>
@@ -1530,9 +1537,9 @@ function BatchPanel({ batch, onDismiss }: {
 
         {!batch.running && (batch.completed > 0 || batch.failed > 0) && (
           <div style={{ marginTop: 10, fontSize: 12, color: "var(--sim-text-mute)" }}>
-            {batch.completed > 0 && <span style={{ color: "var(--sim-up)" }}>{batch.completed} 成功</span>}
+            {batch.completed > 0 && <span style={{ color: "var(--sim-down)" }}>{batch.completed} 成功</span>}
             {batch.completed > 0 && batch.failed > 0 && <span> · </span>}
-            {batch.failed > 0 && <span style={{ color: "var(--sim-down)" }}>{batch.failed} 失败</span>}
+            {batch.failed > 0 && <span style={{ color: "var(--sim-up)" }}>{batch.failed} 失败</span>}
           </div>
         )}
       </div>
